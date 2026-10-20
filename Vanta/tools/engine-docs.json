@@ -1,0 +1,131 @@
+{
+ "_": [
+  "What the engine has and Roblox's documentation does not - described by",
+  "hand, because a meaning cannot be generated. tools/engine-tables.json is",
+  "the list (captured in a live game by tests/apicheck.lua); this is what",
+  "each name on it means. gen-api.py merges the two, and warns about a name",
+  "that is on the list and not in here.",
+  "",
+  "Names that need no entry: a global that is a datatype or a library",
+  "(CFrame, math) is described by its own table; a member that is only a",
+  "capitalised or lower-case twin of a documented one (BrickColor.New,",
+  "Vector3.fromAxis) is derived; the executor's own debug.* come from",
+  "executor-docs.js.",
+  "",
+  "aliases   the capitalised legacy spellings, and what each is the same as",
+  "globals   kind f: params/returns/sum; kind p: type/sum",
+  "namespaces  members of a datatype or library the documentation lacks"
+ ],
+ "aliases": {
+  "Wait": "wait",
+  "Spawn": "spawn",
+  "Delay": "delay",
+  "ElapsedTime": "elapsedTime",
+  "Stats": "stats",
+  "Version": "version",
+  "Game": "game",
+  "Workspace": "workspace"
+ },
+ "globals": {
+  "crash__": {
+   "kind": "f",
+   "params": [],
+   "returns": "()",
+   "sum": "Crashes the client on purpose. Roblox's own test hook; it does exactly what it says."
+  },
+  "hang__": {
+   "kind": "f",
+   "params": [],
+   "returns": "()",
+   "sum": "Hangs the client on purpose, in a loop that never ends. Roblox's own test hook."
+  },
+  "AdReward": {
+   "kind": "p",
+   "type": "",
+   "sum": "An undocumented global the client defines for Roblox's own use; it has no documented purpose for a script."
+  },
+  "CellId": {
+   "kind": "p",
+   "type": "",
+   "sum": "A datatype left over from the original voxel terrain, kept so old scripts still load. Roblox no longer documents it."
+  },
+  "PluginDrag": {
+   "kind": "p",
+   "type": "",
+   "sum": "The datatype `Plugin:StartDrag` used to take: `PluginDrag.new(sender, mimeType, data, mouseIcon, dragIcon, hotSpot)`. Studio only, and undocumented now."
+  }
+ },
+ "namespaces": {
+  "Vector3": {
+   "max": {
+    "params": [
+     [
+      "...",
+      "Vector3"
+     ]
+    ],
+    "returns": "Vector3",
+    "sum": "A `Vector3` whose X, Y and Z are each the largest of that component across the vectors given."
+   },
+   "min": {
+    "params": [
+     [
+      "...",
+      "Vector3"
+     ]
+    ],
+    "returns": "Vector3",
+    "sum": "A `Vector3` whose X, Y and Z are each the smallest of that component across the vectors given."
+   }
+  },
+  "Vector2": {
+   "max": {
+    "params": [
+     [
+      "...",
+      "Vector2"
+     ]
+    ],
+    "returns": "Vector2",
+    "sum": "A `Vector2` whose X and Y are each the largest of that component across the vectors given."
+   },
+   "min": {
+    "params": [
+     [
+      "...",
+      "Vector2"
+     ]
+    ],
+    "returns": "Vector2",
+    "sum": "A `Vector2` whose X and Y are each the smallest of that component across the vectors given."
+   }
+  },
+  "debug": {
+   "dumpheap": {
+    "params": [],
+    "returns": "()",
+    "sum": "Dumps the Luau heap for Roblox's own memory tooling. Undocumented, and not meant for scripts."
+   },
+   "dumprefs": {
+    "params": [],
+    "returns": "()",
+    "sum": "Dumps the references the engine is tracking, for Roblox's own leak hunting. Undocumented, and not meant for scripts."
+   },
+   "tracerefs": {
+    "params": [],
+    "returns": "()",
+    "sum": "Roblox's own switch for tracing references while hunting a leak. Undocumented, and not meant for scripts."
+   },
+   "loadmodule": {
+    "params": [
+     [
+      "module",
+      "ModuleScript"
+     ]
+    ],
+    "returns": "function",
+    "sum": "Compiles a `ModuleScript` and returns its chunk as a function, without running it and without the `require` cache. Roblox's own reloading hook."
+   }
+  }
+ }
+}

@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Build output
+build/
+*.dylib
+*.dSYM/
+*.o
+*.a
+*.app
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Runtime data (lives beside the project, never in the repo)
+.vanta-token
+.vanta-settings
+autoexec/
+workspace/
+console/
+library/
+
+# Reference trees, previous iterations, source snapshots
+LunarModule/
+RobloxExecutor/
+Vanta-alpen-backup/
+unix-roblox/
+luau-0.742/
+roblox-macplayer-internals/
+*.tgz
+
+# Editors
+.vscode/
+.idea/
+*.xcuserstate
+xcuserdata/

@@ -1,0 +1,111 @@
+#include "private.h"
+#include "tinyhook.h"
+
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#ifndef COMPACT
+    #include <mach/mach_error.h> // mach_error_string()
+#endif
+
+int tiny_interpose(uint32_t image_index, const char *symbol_name, void *replacement, void **origin) {
+    ARG_CHECK(symbol_name != NULL);
+    ARG_CHECK(replacement != NULL);
+    intptr_t image_slide = _dyld_get_image_vmaddr_slide(image_index);
+    struct mach_header_64 *mh_header = (struct mach_header_64 *)_dyld_get_image_header(image_index);
+    struct load_command *ld_command = (void *)mh_header + sizeof(struct mach_header_64);
+    if (mh_header == NULL) {
+        LOG_ERROR("parse_macho: image_index %d out of range!", image_index);
+        return -1;
+    }
+
+    int nsym_sect = 0;
+    bool sect_isconst[5];
+    struct section_64 *sym_sects[5] = {NULL};
+    struct symtab_command *symtab_cmd = NULL;
+    struct dysymtab_command *dysymtab_cmd = NULL;
+    struct segment_command_64 *linkedit_cmd = NULL;
+    for (int i = 0; i < mh_header->ncmds; i++) {
+        if (ld_command->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *segment = (struct segment_command_64 *)ld_command;
+            if (strcmp(segment->segname, "__DATA_CONST") == 0 || strcmp(segment->segname, "__AUTH_CONST") == 0) {
+                struct section_64 *section = (void *)segment + sizeof(struct segment_command_64);
+                for (int j = 0; j < segment->nsects; j++) {
+                    if ((section[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS ||
+                        strcmp(section[j].sectname, "__got") == 0) { // dyld shared cache cleaned the flag
+                        sect_isconst[nsym_sect] = true;
+                        sym_sects[nsym_sect++] = section + j; // __nl_symbol_ptr
+                        // TODO: check if in shared cache and parse each section mapping
+                    }
+                }
+            }
+            else if (strcmp(segment->segname, "__DATA") == 0) {
+                struct section_64 *section = (void *)segment + sizeof(struct segment_command_64);
+                for (int j = 0; j < segment->nsects; j++) {
+                    if ((section[j].flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS) {
+                        sect_isconst[nsym_sect] = false;
+                        sym_sects[nsym_sect++] = section + j; // __la_symbol_ptr
+                    }
+                }
+            }
+            else if (strcmp(segment->segname, "__LINKEDIT") == 0) {
+                linkedit_cmd = (struct segment_command_64 *)ld_command;
+            }
+        }
+        else if (ld_command->cmd == LC_SYMTAB) {
+            symtab_cmd = (struct symtab_command *)ld_command;
+        }
+        else if (ld_command->cmd == LC_DYSYMTAB) {
+            dysymtab_cmd = (struct dysymtab_command *)ld_command;
+        }
+        ld_command = (void *)ld_command + ld_command->cmdsize;
+    }
+    if (linkedit_cmd == NULL || symtab_cmd == NULL || dysymtab_cmd == NULL) {
+        LOG_ERROR("tiny_interpose: bad mach-o structure for image_index %d!", image_index);
+        return 1;
+    }
+    void *linkedit_base = (void *)image_slide + linkedit_cmd->vmaddr - linkedit_cmd->fileoff;
+    char *str_tbl = linkedit_base + symtab_cmd->stroff;
+    struct nlist_64 *nl_tbl = linkedit_base + symtab_cmd->symoff;
+    uint32_t *indirect_sym_tbl = linkedit_base + dysymtab_cmd->indirectsymoff;
+
+    int err = 0;
+    bool found = false;
+    for (int i = 0; i < nsym_sect; i++) {
+        struct section_64 *sym_sec = sym_sects[i];
+        if (!sym_sec) continue;
+        void **sym_ptrs = (void **)(sym_sec->addr + image_slide);
+        uint32_t *indirect_sym_entry = indirect_sym_tbl + sym_sec->reserved1; // reserved1 is an index!
+        size_t nptrs = sym_sec->size / sizeof(void *);
+        for (int j = 0; j < nptrs; j++) {
+            uint32_t symtab_index = indirect_sym_entry[j];
+            if (symtab_index == INDIRECT_SYMBOL_LOCAL ||
+                symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
+                continue;
+            }
+            if (strcmp(symbol_name, str_tbl + nl_tbl[symtab_index].n_un.n_strx) == 0) {
+                found = true;
+                if (sect_isconst[i]) {
+                    err = mach_vm_protect(mach_task_self(), (mach_vm_address_t)sym_ptrs, sym_sec->size, FALSE,
+                                          VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                    if (err != 0) {
+                        LOG_ERROR("mach_vm_protect failed for address %p: %s", sym_ptrs, mach_error_string(err));
+                        break;
+                    }
+                }
+                if (origin != NULL) *origin = sym_ptrs[j];
+                sym_ptrs[j] = replacement;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        err = -1;
+        LOG_ERROR("tiny_interpose: symbol '%s' not found in image_index %d!", symbol_name, image_index);
+    }
+    return err;
+}

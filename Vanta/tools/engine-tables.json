@@ -1,0 +1,518 @@
+{
+ "_": [
+  "What the engine actually has, captured by tests/apicheck.lua in a",
+  "live game. gen-api.py merges it into api.js.",
+  "",
+  "The editor's library and datatype members otherwise come from",
+  "Roblox's documentation, which is written by people and is not the",
+  "engine: Vector3.max, Color3.toHSV, debug.dumpheap, SharedTable.*",
+  "and BrickColor.New all exist and none of them are documented. A",
+  "member that exists and is missing here becomes a squiggle under",
+  "working code, so this file is the difference between a check people",
+  "keep on and one they turn off.",
+  "",
+  "To refresh: python3 tools/gen-apicheck.py, run tests/apicheck.lua in",
+  "a game, then python3 tools/gen-apicheck.py --snapshot."
+ ],
+ "engine": "unknown",
+ "globals": {
+  "AdReward": "p",
+  "Axes": "p",
+  "BrickColor": "p",
+  "CFrame": "p",
+  "CatalogSearchParams": "p",
+  "CellId": "p",
+  "Color3": "p",
+  "ColorSequence": "p",
+  "ColorSequenceKeypoint": "p",
+  "Content": "p",
+  "DateTime": "p",
+  "Delay": "f",
+  "DockWidgetPluginGuiInfo": "p",
+  "ElapsedTime": "f",
+  "Enum": "p",
+  "Faces": "p",
+  "FloatCurveKey": "p",
+  "Font": "p",
+  "Game": "p",
+  "Instance": "p",
+  "NumberRange": "p",
+  "NumberSequence": "p",
+  "NumberSequenceKeypoint": "p",
+  "OverlapParams": "p",
+  "Path2DControlPoint": "p",
+  "PathWaypoint": "p",
+  "PhysicalProperties": "p",
+  "PluginDrag": "p",
+  "PluginManager": "f",
+  "Random": "p",
+  "Ray": "p",
+  "RaycastParams": "p",
+  "Rect": "p",
+  "Region3": "p",
+  "Region3int16": "p",
+  "RotationCurveKey": "p",
+  "SecurityCapabilities": "p",
+  "SharedTable": "p",
+  "Spawn": "f",
+  "Stats": "f",
+  "TweenInfo": "p",
+  "UDim": "p",
+  "UDim2": "p",
+  "User": "p",
+  "UserSettings": "f",
+  "ValueCurveKey": "p",
+  "Vector2": "p",
+  "Vector2int16": "p",
+  "Vector3": "p",
+  "Vector3int16": "p",
+  "Version": "f",
+  "Wait": "f",
+  "Workspace": "p",
+  "_G": "p",
+  "_VERSION": "p",
+  "assert": "f",
+  "bit32": "p",
+  "buffer": "p",
+  "collectgarbage": "f",
+  "coroutine": "p",
+  "crash__": "f",
+  "delay": "f",
+  "elapsedTime": "f",
+  "error": "f",
+  "game": "p",
+  "gcinfo": "f",
+  "getfenv": "f",
+  "getmetatable": "f",
+  "hang__": "f",
+  "ipairs": "f",
+  "math": "p",
+  "newproxy": "f",
+  "next": "f",
+  "os": "p",
+  "pairs": "f",
+  "pcall": "f",
+  "print": "f",
+  "printidentity": "f",
+  "rawequal": "f",
+  "rawget": "f",
+  "rawlen": "f",
+  "rawset": "f",
+  "require": "f",
+  "select": "f",
+  "setfenv": "f",
+  "setmetatable": "f",
+  "settings": "f",
+  "shared": "p",
+  "spawn": "f",
+  "stats": "f",
+  "string": "p",
+  "table": "p",
+  "tick": "f",
+  "time": "f",
+  "tonumber": "f",
+  "tostring": "f",
+  "type": "f",
+  "typeof": "f",
+  "unpack": "f",
+  "utf8": "p",
+  "vector": "p",
+  "version": "f",
+  "wait": "f",
+  "warn": "f",
+  "workspace": "p",
+  "xpcall": "f",
+  "ypcall": "f"
+ },
+ "namespaces": {
+  "Axes": {
+   "new": "f"
+  },
+  "BrickColor": {
+   "Black": "f",
+   "Blue": "f",
+   "DarkGray": "f",
+   "Gray": "f",
+   "Green": "f",
+   "New": "f",
+   "Random": "f",
+   "Red": "f",
+   "White": "f",
+   "Yellow": "f",
+   "new": "f",
+   "palette": "f",
+   "random": "f"
+  },
+  "CFrame": {
+   "Angles": "f",
+   "fromAxisAngle": "f",
+   "fromEulerAngles": "f",
+   "fromEulerAnglesXYZ": "f",
+   "fromEulerAnglesYXZ": "f",
+   "fromMatrix": "f",
+   "fromOrientation": "f",
+   "fromRotationBetweenVectors": "f",
+   "identity": "p",
+   "lookAlong": "f",
+   "lookAt": "f",
+   "new": "f"
+  },
+  "Color3": {
+   "fromHSV": "f",
+   "fromHex": "f",
+   "fromRGB": "f",
+   "new": "f",
+   "toHSV": "f"
+  },
+  "ColorSequence": {
+   "new": "f"
+  },
+  "ColorSequenceKeypoint": {
+   "new": "f"
+  },
+  "Content": {
+   "fromAssetId": "f",
+   "fromObject": "f",
+   "fromUri": "f",
+   "none": "p"
+  },
+  "DateTime": {
+   "fromIsoDate": "f",
+   "fromLocalTime": "f",
+   "fromUniversalTime": "f",
+   "fromUnixTimestamp": "f",
+   "fromUnixTimestampMillis": "f",
+   "now": "f"
+  },
+  "DockWidgetPluginGuiInfo": {
+   "new": "f"
+  },
+  "Faces": {
+   "new": "f"
+  },
+  "FloatCurveKey": {
+   "new": "f"
+  },
+  "Font": {
+   "fromEnum": "f",
+   "fromId": "f",
+   "fromName": "f",
+   "new": "f"
+  },
+  "Instance": {
+   "fromExisting": "f",
+   "new": "f"
+  },
+  "NumberRange": {
+   "new": "f"
+  },
+  "NumberSequence": {
+   "new": "f"
+  },
+  "NumberSequenceKeypoint": {
+   "new": "f"
+  },
+  "OverlapParams": {
+   "new": "f"
+  },
+  "Path2DControlPoint": {
+   "new": "f"
+  },
+  "PathWaypoint": {
+   "new": "f"
+  },
+  "PhysicalProperties": {
+   "new": "f"
+  },
+  "Random": {
+   "new": "f"
+  },
+  "Ray": {
+   "new": "f"
+  },
+  "RaycastParams": {
+   "new": "f"
+  },
+  "Rect": {
+   "new": "f"
+  },
+  "Region3": {
+   "new": "f"
+  },
+  "Region3int16": {
+   "new": "f"
+  },
+  "RotationCurveKey": {
+   "new": "f"
+  },
+  "SecurityCapabilities": {
+   "fromCurrent": "f",
+   "new": "f"
+  },
+  "SharedTable": {
+   "clear": "f",
+   "clone": "f",
+   "cloneAndFreeze": "f",
+   "increment": "f",
+   "isFrozen": "f",
+   "new": "f",
+   "size": "f",
+   "update": "f"
+  },
+  "TweenInfo": {
+   "new": "f"
+  },
+  "UDim": {
+   "new": "f"
+  },
+  "UDim2": {
+   "fromOffset": "f",
+   "fromScale": "f",
+   "new": "f"
+  },
+  "User": {
+   "fromId": "f",
+   "fromString": "f"
+  },
+  "ValueCurveKey": {
+   "new": "f"
+  },
+  "Vector2": {
+   "max": "f",
+   "min": "f",
+   "new": "f",
+   "one": "p",
+   "xAxis": "p",
+   "yAxis": "p",
+   "zero": "p"
+  },
+  "Vector2int16": {
+   "new": "f"
+  },
+  "Vector3": {
+   "FromAxis": "f",
+   "FromNormalId": "f",
+   "fromAxis": "f",
+   "fromNormalId": "f",
+   "max": "f",
+   "min": "f",
+   "new": "f",
+   "one": "p",
+   "xAxis": "p",
+   "yAxis": "p",
+   "zAxis": "p",
+   "zero": "p"
+  },
+  "Vector3int16": {
+   "new": "f"
+  },
+  "bit32": {
+   "arshift": "f",
+   "band": "f",
+   "bnot": "f",
+   "bor": "f",
+   "btest": "f",
+   "bxor": "f",
+   "byteswap": "f",
+   "countlz": "f",
+   "countrz": "f",
+   "extract": "f",
+   "lrotate": "f",
+   "lshift": "f",
+   "replace": "f",
+   "rrotate": "f",
+   "rshift": "f"
+  },
+  "buffer": {
+   "copy": "f",
+   "create": "f",
+   "fill": "f",
+   "fromstring": "f",
+   "len": "f",
+   "readbits": "f",
+   "readf32": "f",
+   "readf64": "f",
+   "readi16": "f",
+   "readi32": "f",
+   "readi8": "f",
+   "readstring": "f",
+   "readu16": "f",
+   "readu32": "f",
+   "readu8": "f",
+   "tostring": "f",
+   "writebits": "f",
+   "writef32": "f",
+   "writef64": "f",
+   "writei16": "f",
+   "writei32": "f",
+   "writei8": "f",
+   "writestring": "f",
+   "writeu16": "f",
+   "writeu32": "f",
+   "writeu8": "f"
+  },
+  "coroutine": {
+   "close": "f",
+   "create": "f",
+   "isyieldable": "f",
+   "resume": "f",
+   "running": "f",
+   "status": "f",
+   "wrap": "f",
+   "yield": "f"
+  },
+  "debug": {
+   "dumpcodesize": "f",
+   "dumpheap": "f",
+   "dumprefs": "f",
+   "getconstant": "f",
+   "getconstants": "f",
+   "getinfo": "f",
+   "getmemorycategory": "f",
+   "getproto": "f",
+   "getprotos": "f",
+   "getstack": "f",
+   "getupvalue": "f",
+   "getupvalues": "f",
+   "info": "f",
+   "loadmodule": "f",
+   "profilebegin": "f",
+   "profileend": "f",
+   "resetmemorycategory": "f",
+   "setconstant": "f",
+   "setmemorycategory": "f",
+   "setstack": "f",
+   "setupvalue": "f",
+   "traceback": "f",
+   "tracerefs": "f"
+  },
+  "math": {
+   "abs": "f",
+   "acos": "f",
+   "asin": "f",
+   "atan": "f",
+   "atan2": "f",
+   "ceil": "f",
+   "clamp": "f",
+   "cos": "f",
+   "cosh": "f",
+   "deg": "f",
+   "e": "p",
+   "exp": "f",
+   "floor": "f",
+   "fmod": "f",
+   "frexp": "f",
+   "huge": "p",
+   "isfinite": "f",
+   "isinf": "f",
+   "isnan": "f",
+   "ldexp": "f",
+   "lerp": "f",
+   "log": "f",
+   "log10": "f",
+   "map": "f",
+   "max": "f",
+   "min": "f",
+   "modf": "f",
+   "nan": "p",
+   "noise": "f",
+   "phi": "p",
+   "pi": "p",
+   "pow": "f",
+   "rad": "f",
+   "random": "f",
+   "randomseed": "f",
+   "round": "f",
+   "sign": "f",
+   "sin": "f",
+   "sinh": "f",
+   "sqrt": "f",
+   "sqrt2": "p",
+   "tan": "f",
+   "tanh": "f",
+   "tau": "p"
+  },
+  "os": {
+   "clock": "f",
+   "date": "f",
+   "difftime": "f",
+   "time": "f"
+  },
+  "string": {
+   "byte": "f",
+   "char": "f",
+   "find": "f",
+   "format": "f",
+   "gmatch": "f",
+   "gsub": "f",
+   "len": "f",
+   "lower": "f",
+   "match": "f",
+   "pack": "f",
+   "packsize": "f",
+   "rep": "f",
+   "reverse": "f",
+   "split": "f",
+   "sub": "f",
+   "unpack": "f",
+   "upper": "f"
+  },
+  "table": {
+   "clear": "f",
+   "clone": "f",
+   "concat": "f",
+   "create": "f",
+   "find": "f",
+   "foreach": "f",
+   "foreachi": "f",
+   "freeze": "f",
+   "getn": "f",
+   "insert": "f",
+   "isfrozen": "f",
+   "maxn": "f",
+   "move": "f",
+   "pack": "f",
+   "remove": "f",
+   "sort": "f",
+   "unpack": "f"
+  },
+  "task": {
+   "cancel": "f",
+   "defer": "f",
+   "delay": "f",
+   "desynchronize": "f",
+   "spawn": "f",
+   "synchronize": "f",
+   "wait": "f"
+  },
+  "utf8": {
+   "char": "f",
+   "charpattern": "p",
+   "codepoint": "f",
+   "codes": "f",
+   "graphemes": "f",
+   "len": "f",
+   "nfcnormalize": "f",
+   "nfdnormalize": "f",
+   "offset": "f"
+  },
+  "vector": {
+   "abs": "f",
+   "angle": "f",
+   "ceil": "f",
+   "clamp": "f",
+   "create": "f",
+   "cross": "f",
+   "dot": "f",
+   "floor": "f",
+   "lerp": "f",
+   "magnitude": "f",
+   "max": "f",
+   "min": "f",
+   "normalize": "f",
+   "one": "p",
+   "sign": "f",
+   "zero": "p"
+  }
+ }
+}
