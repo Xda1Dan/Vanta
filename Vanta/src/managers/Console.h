@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -105,9 +106,16 @@ namespace console {
 
     // The HTTP reader polls from a sequence number. This is the server-side
     // history; the cap keeps a chatty script from growing memory forever.
+    //
+    // The cap used to be 512, which is fewer records than one compliance suite
+    // prints. A run with several suites in it then lost everything older than
+    // the last half-minute, and the log file could not fill the gap because
+    // rconsoleclear truncated it. 16384 holds a full session's worth of test
+    // output (sUNC alone is a few hundred lines) at a few MB of strings.
     inline std::deque<Entry> history;
     inline uint64_t nextSeq = 1;
-    inline constexpr size_t kHistory = 512;
+    inline constexpr size_t kHistory = 16384;
+    inline std::atomic<size_t> dropped{0};
 
     inline uint64_t lastSeq()
     {
@@ -118,7 +126,13 @@ namespace console {
     inline std::string recordsJson(size_t since)
     {
         std::lock_guard<std::mutex> lock(mutex);
-        std::string out = "{\"records\":[";
+        // `oldest` and `dropped` let a reader notice a gap instead of silently
+        // assuming it saw every record; the GUI ignores both.
+        const uint64_t oldest = history.empty() ? 0 : history.front().seq;
+        std::string out = "{\"oldest\":" + std::to_string(oldest);
+        out += ",\"next\":" + std::to_string(nextSeq);
+        out += ",\"dropped\":" + std::to_string(dropped.load(std::memory_order_relaxed));
+        out += ",\"records\":[";
         bool first = true;
         for (const Entry& entry : history) {
             if (entry.seq <= since)
@@ -137,14 +151,39 @@ namespace console {
     inline std::deque<Record> pending;
     inline std::condition_variable wake;
     inline std::atomic<bool> running{false};
-    inline std::atomic<size_t> dropped{0};
 
     // Deep enough that a burst is never lost, shallow enough that a script
-    // printing into a closed GUI cannot grow it without bound.
-    inline constexpr size_t kMaxPending = 1024;
+    // printing into a closed GUI cannot grow it without bound. The consumer
+    // only pops one record at a time, so a suite that prints thousands of
+    // lines in a frame can outrun it; the old 1024 dropped the middle of the
+    // run. Memory is bounded by this many queued strings.
+    inline constexpr size_t kMaxPending = 16384;
 
     inline void worker()
     {
+        // The log is opened once, rotated once per launch, and appended from
+        // this thread only. Reopening per record cost an open/close syscall
+        // pair for every line; rconsoleclear used to truncate the file, which
+        // is why a run that tested rconsoleclear lost all its earlier output.
+        std::ofstream log;
+        {
+            std::error_code ignored;
+            if (std::filesystem::exists(logPath(), ignored) &&
+                std::filesystem::file_size(logPath(), ignored) > 0)
+                std::filesystem::rename(logPath(), directory() / "console.previous.log", ignored);
+
+            log.open(logPath(), std::ios::app | std::ios::binary);
+            if (log) {
+                const std::time_t now = std::time(nullptr);
+                std::tm broken{};
+                char stamp[32] = {};
+                gmtime_r(&now, &broken);
+                std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &broken);
+                log << "=== Vanta console session " << stamp << " ===\n";
+                log.flush();
+            }
+        }
+
         while (running.load(std::memory_order_acquire)) {
             Record record;
             {
@@ -160,17 +199,21 @@ namespace console {
                 pending.pop_front();
             }
 
-            // The log file is the worker's too. Doing it in `send` meant an
-            // open/append/close per record on Roblox's frame thread - measured
-            // at 1440 ms for 20 000 lines, which is the whole cost of that
-            // loop; the socket was never the expensive part.
+            // rconsoleclear clears the script's own console window, not the
+            // diagnostic history. Leave a marker and keep everything before it.
             if (record.name == "rconsoleclear") {
-                std::ofstream(logPath(), std::ios::trunc | std::ios::binary);
+                if (log) {
+                    log << "--- rconsoleclear ---\n";
+                    log.flush();
+                }
             } else if (record.name != "rconsolename" && record.name != "rconsoleshow"
                        && record.name != "rconsolehide") {
-                std::ofstream out(logPath(), std::ios::app | std::ios::binary);
-                if (out)
-                    out << record.message << "\n";
+                if (log) {
+                    log << record.message << "\n";
+                    // Flushed per line so a client crash or hang detector keeps
+                    // the output up to the last line the worker handled.
+                    log.flush();
+                }
             }
 
             {
@@ -184,6 +227,9 @@ namespace console {
                     history.pop_front();
             }
         }
+
+        if (log)
+            log.flush();
     }
 
     inline void start()
