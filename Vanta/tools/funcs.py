@@ -10,9 +10,13 @@ never make it into the symbol table. Source order is address order within a
 translation unit, which is what makes it usable for locating a function by its
 position between two already-identified neighbours.
 """
-import struct, sys
+import os, struct, sys
 
-BIN = "/Applications/Roblox.app/Contents/MacOS/RobloxPlayer"
+# The client has moved between Roblox.app and RobloxPlayer.app across builds.
+DEFAULT_BIN = "/Applications/Roblox.app/Contents/MacOS/RobloxPlayer"
+if not os.path.exists(DEFAULT_BIN):
+    DEFAULT_BIN = "/Applications/RobloxPlayer.app/Contents/MacOS/RobloxPlayer"
+BIN = os.environ.get("ROBLOX_BIN", DEFAULT_BIN)
 
 def load(path):
     data = open(path, "rb").read()

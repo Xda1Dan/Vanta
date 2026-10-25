@@ -6,11 +6,14 @@
 //  assumed from src/luau. The vendored tree is Roblox's own fork - LUA_TINTEGER
 //  sits at tag 4, which is why LUA_TFUNCTION is 8 and not 7 - and TValue,
 //  Closure and TString match it closely. lua_State does not: Roblox reorders it
-//  (namecall lands at 0x28 where the vendored struct has stack_last), so
-//  nothing here is taken on faith from the headers.
+//  on every other build, so nothing here is taken on faith from the headers.
 //
 //  Every offset below was read out of a function whose identity is already
-//  established, named in the comment beside it. tools/dis.sh reproduces them.
+//  established, named in the comment beside it. tools/dis.sh reproduces them
+//  (ROBLOX_BIN=/Applications/RobloxPlayer.app/Contents/MacOS/RobloxPlayer for
+//  0.744). The 0.744 values below were re-measured from that binary and agree
+//  with the Z4 dump's structs.hpp, whose enc:: field encodings are noted where
+//  they apply.
 //
 
 #pragma once
@@ -28,7 +31,9 @@ namespace luaobj {
     inline constexpr int kValueSize = 16;
 
     // Type tags. Roblox's fork inserts LUA_TINTEGER at 4, shifting everything
-    // above it up by one against upstream Luau.
+    // above it up by one against upstream Luau. 0.744 keeps that order and adds
+    // LUA_TBUFFER (11), LUA_TCLASS (12) and LUA_TOBJECT (13) past the thread,
+    // which is what LUA_T_COUNT=14 counts to.
     inline constexpr int kTagNil = 0;
     inline constexpr int kTagBoolean = 1;
     inline constexpr int kTagLightUserdata = 2;
@@ -40,41 +45,70 @@ namespace luaobj {
     inline constexpr int kTagFunction = 8;   // lua_iscfunction: cmpl $8, 0xc(%rax)
     inline constexpr int kTagUserdata = 9;   // lua_touserdata's tag-9 arm reads +0x10
     inline constexpr int kTagThread = 10;
+    inline constexpr int kTagBuffer = 11;
+    inline constexpr int kTagClass = 12;
+    inline constexpr int kTagObject = 13;
 
     namespace value {
         inline constexpr int gc = 0x0;   // the GCObject pointer
         inline constexpr int tt = 0xc;   // lua_iscfunction reads the tag here
     }
 
-    // lua_gettop, lua_namecallatom, lua_pushcclosurek and lua_clonefunction
-    // between them account for every field used here.
+    // lua_State, 136 bytes on 0.744. Re-measured on 0.744 from lua_gettop
+    // (top/base), the LuaVMLoad wrapper and lua_pushcclosurek (global),
+    // lua_settop (ci) and the Z4 structs, which the disassembly agrees with
+    // field for field. The 0.742 layout it replaces had ci at 0x8, global at
+    // 0x18, top at 0x20 and base at 0x28 - every one of those moved.
     namespace state {
-        inline constexpr int status = 0x03;  // see kStatusYield below
-        inline constexpr int marked = 0x1;  // luaC_threadbarrier: testb $4, 0x2(%rdi)
-        inline constexpr int namecall = 0x60;
-        inline constexpr int global = 0x18;
-        inline constexpr int base = 0x28;
-        inline constexpr int ci = 0x8;
-        inline constexpr int top = 0x20;
-        inline constexpr int base_ci = 0x78;  // getcurrenv compares ci against it
-        inline constexpr int gt = 0x68;
+        inline constexpr int marked = 0x0;         // luaC_threadbarrier: testb $4, (%rdi)
+        inline constexpr int memcat = 0x1;
+        inline constexpr int tt = 0x2;             // luaF_newLclosure: movb $8, 0x2(%rax)
+        inline constexpr int status = 0x03;        // see kStatusYield below
+        inline constexpr int activememcat = 0x04;  // luaF_newLclosure copies it into the closure
+        inline constexpr int singlestep = 0x05;
+        inline constexpr int isactive = 0x06;
+        inline constexpr int gt = 0x08;
+        inline constexpr int base_ci = 0x18;
+        inline constexpr int nCcalls = 0x20;
+        inline constexpr int baseCcalls = 0x22;
+        inline constexpr int userdata = 0x28;      // RobloxExtraSpace
+        inline constexpr int finalizers = 0x30;
+        inline constexpr int namecall = 0x38;
+        inline constexpr int gclist = 0x40;
+        inline constexpr int openupval = 0x48;
+        inline constexpr int ci = 0x50;
+        inline constexpr int base = 0x58;
+        inline constexpr int stack = 0x60;
+        inline constexpr int stack_last = 0x68;
+        inline constexpr int top = 0x70;
+        inline constexpr int global = 0x78;
+        // Encrypted on 0.744 (Z4: LSTATE_STACKSIZE_ENC, vmval3 - stored XOR'd
+        // with the field's own address). Nothing in src/ reads it; if one
+        // ever does, go through encDecode below rather than a raw load.
+        inline constexpr int stacksize = 0x80;
+        inline constexpr int size_ci = 0x84;
     }
 
     // Roblox short-circuits method calls on userdata through
     // LOP_NAMECALLUDATA, which reads a per-tag direct handler out of the global
     // state and never consults the metatable. lua_registeruserdatadirectaccess
-    // is what fills that in, and its body gives the whole layout:
+    // is what fills that in, and its body gives the whole layout. Re-measured
+    // on 0.744 - same shape, same numbers:
     //
-    //     movq 0x30(%r15), %rax              ; g = L->global
-    //     movq 0x3c40(%rax,%rcx,8), %r14     ; g->udatamt[tag]
+    //     movq 0x78(%r15), %rax              ; g = L->global
+    //     movq 0x3db0(%rax,%rcx,8), %r14     ; g->udatamt[tag]
     //     leaq (%rcx,%rcx,8), %rcx           ; tag * 9
     //     leaq (%rax,%rcx,8), %rbx           ; g + tag * 72
-    //     addq $0x7b0, %rbx                  ; g->udatadirect[tag]
+    //     addq $0x920, %rbx                  ; g->udatadirect[tag]
     //
     // 72 bytes per entry matches the three TValues and three pointers of
-    // lua_UdataDirectAccessData, which fixes the field offsets below.
+    // lua_UdataDirectAccessData, which fixes the field offsets below. Both the
+    // base and the stride came through 0.744 unchanged; the tag byte of the
+    // Udata they inspect moved as part of the CommonHeader reshuffle (0x3 on
+    // both, but the bytes around it moved - see the header note above).
     namespace udatadirect {
         inline constexpr int base = 0x920;     // from the global state
+        inline constexpr int amt = 0x3db0;     // the per-tag method cache, 8 bytes each
         inline constexpr int stride = 0x48;
         inline constexpr int indextm = 0x00;
         inline constexpr int newindextm = 0x10;
@@ -85,48 +119,64 @@ namespace luaobj {
     }
 
     // Udata: the tag sits in the byte after the header, and lua_touserdata
-    // hands back the data pointer, which is the object plus 0x10.
+    // hands back the data pointer, which is the object plus 0x10. Unchanged on
+    // 0.744 (Z4: tag 0x3, len 0x4, metatable 0x8 - that one now stored
+    // encoded, UDATA_META_ENC - and data at 0x10; neither metatable nor len is
+    // read raw anywhere in src/).
     namespace udata {
         inline constexpr int tag = 0x3;
         inline constexpr int data = 0x10;
     }
 
-    // Proto, taken from the vendored header - Roblox's own fork - and checked
-    // in-game against debug.info, which answers for numparams, is_vararg,
-    // linedefined, source and debugname from the engine's side. See
-    // Debug::protoinfo and tests/proto.lua.
-    // Proto. The size fields were read out of a live Proto and cross-checked
-    // against debug.info; the two array pointers come from luau_load itself,
-    // which stores each array immediately before its count:
-    //     movq %rax, 0x78(%rcx) ; movl %r14d, 0x98(%rcx)   -> k    / sizek
-    //     movq %rax, 0x80(%rsi) ; movl %r14d, 0x9c(%rsi)   -> code / sizecode
-    // nups and sizeupvalues come from aux_upvalue, which reads p->nups at +3
-    // and p->sizeupvalues at +0x94.
+    // Proto on 0.744 is a different building: 216 bytes, the constant and code
+    // arrays moved deeper into the struct, and eight pointers are stored
+    // ENCODED (Z4 marks them vmval1-4 - each stored XOR'd with / offset by its
+    // own address). The raw fields below are the only ones src/ reads:
+    // k/code/p and the four sizes. The encoded ones are listed so nobody
+    // guesses at them later; reads go through encDecode<T, OP>.
+    //
+    //     encoded (do not read raw):      source 0x08 (vmval1)
+    //                                     upvalues 0x10 (vmval3)
+    //                                     locvars 0x20 (vmval1)
+    //                                     lineinfo 0x40 (vmval3)
+    //                                     abslineinfo 0x58 (vmval2)
+    //                                     debugname 0x60 (vmval1)
+    //                                     debuginsn 0x68 (vmval4)
+    //                                     typeinfo 0x80 (vmval3)
     namespace proto {
         inline constexpr int nups = 0x3;
-        inline constexpr int numparams = 0x4;
-        inline constexpr int is_vararg = 0x5;
-        inline constexpr int maxstacksize = 0x6;
-        inline constexpr int p = 0x48;           // Proto**
-        inline constexpr int k = 0x20;           // TValue*
-        inline constexpr int code = 0x28;        // Instruction*
-        inline constexpr int sizep = 0xa0;
-        inline constexpr int sizeupvalues = 0x90;
-        inline constexpr int sizek = 0xac;
-        inline constexpr int sizecode = 0xa8;
-        inline constexpr int linedefined = 0x88;
+        inline constexpr int is_vararg = 0x4;
+        inline constexpr int maxstacksize = 0x5;
+        inline constexpr int numparams = 0x6;
+        inline constexpr int flags = 0x7;
+        inline constexpr int codeentry = 0x28;
+        inline constexpr int p = 0x30;           // Proto**
+        inline constexpr int k = 0x48;           // TValue*
+        inline constexpr int code = 0x50;        // Instruction*
+        inline constexpr int execdata = 0x70;
+        inline constexpr int sizeupvalues = 0x8c;
+        inline constexpr int linedefined = 0x90;
+        inline constexpr int sizek = 0x94;
+        inline constexpr int sizelineinfo = 0xa0;
+        inline constexpr int sizecode = 0xa4;
+        inline constexpr int sizep = 0xa8;
+        inline constexpr int sizelocvars = 0xac;
+        inline constexpr int feedbackvec = 0xb0;
     }
 
     // An open upvalue is stored as a LUA_TUPVAL object whose value pointer sits
     // at +8; a closed one is the value itself. aux_upvalue does exactly this
     // test - cmpl $0x10, 0xc(%rax) - which is where the tag comes from.
+    // Unchanged on 0.744 (Z4 UpVal: v at 0x8).
     inline constexpr int kTagUpval = 16;
     namespace upval {
         inline constexpr int value = 0x8;
     }
 
     // lua_namecallatom reads the atom at +6, the length at +0x14 and getstr()s
-    // the payload at +0x18.
+    // the payload at +0x18. Unchanged on 0.744 (Z4 TString: atomflag 0x4,
+    // atom 0x6, next 0x8, hash 0x10 - that one now stored encoded,
+    // TSTRING_HASH_ENC - len 0x14, data 0x18). Nothing in src/ reads hash.
     namespace tstring {
         inline constexpr int atom = 0x6;
         inline constexpr int length = 0x14;
@@ -134,56 +184,41 @@ namespace luaobj {
     }
 
     // From lua_pushcclosurek's getcurrenv: ci->func, then the closure's env.
-    // nresults and flags come from the lua_pcall-shaped function at 0x102C6140E,
-    // which writes the result count to +0x20 and ORs LUA_CALLINFO_HANDLE (2)
-    // into +0x2c.
-    // Measured with __vanta_cibase, which reads L->ci, L->base and L->top inside
-    // ONE call - a C call gets its own CallInfo and its own stack window, so
-    // reading them in separate calls compares different frames and answers
-    // nothing.
+    // nresults and flags come from the lua_pcall-shaped function; nothing in
+    // src/ reads either one, so they are recorded, not relied on.
     //
     // **The field ORDER is not stable across builds.** Only `func` is derived;
-    // `base` and `top` are hand-held, and they have now gone stale twice in a
-    // row, each time by colliding with `func`:
+    // `base` and `top` are hand-held, and they have now gone stale three times
+    // in a row, each time by colliding with `func`:
     //
-    //              base    top     func
-    //   0.737      0x00    0x08    0x10
-    //   0.738      0x18    0x10    0x08      the order is reversed
+    //              base    func    top
+    //   0.737      0x00    0x10    0x08
+    //   0.738      0x18    0x08    0x10     the order is reversed
+    //   0.742      0x00    0x18    0x08
+    //   0.744      0x00    0x08    0x18     func and top swap back, and a new
+    //                                       Proto* `p` sits between them
     //
-    // On 0.737 the stale `base` landed on `func` (both 0x10); on 0.738 the
-    // stale `top` landed on `func` (both 0x08). Neither crashed, because
-    // `looksLikeFrame`'s func <= base and top <= base hold trivially when two
-    // of them are the same word - debug.getstack just reported a nonsense frame
-    // depth, which is sUNC's "couldn't retrieve an expected stack value from a
-    // foreign thread". **Whenever `func` moves, re-measure the other two.**
-    //
-    // How 0.738 was pinned down, because "points into the stack" is not enough
-    // (savedpc satisfies it too): __vanta_cibase reports each word's distance
-    // from base, and the answer is arithmetic rather than a guess -
-    //
-    //   ci+0x08 == base - 0x10        func, one TValue below base
-    //   ci+0x10 == base + 0x140       top: LUA_MINSTACK (20) * sizeof(TValue),
-    //                                 exactly what luaD_precall gives a C frame
-    //   ci+0x18 == base + 0x00        base
-    //
-    // nresults and flags came from the lua_pcall-shaped function on an older
-    // build (+0x20 result count, LUA_CALLINFO_HANDLE (2) OR-ed into +0x2c).
-    // Nothing in src/ reads either one, so they are recorded, not relied on.
+    // On 0.744 the Z4 dump's CallInfo - base 0x00, func 0x08, p 0x10, top
+    // 0x18, savedpc 0x20, stride 0x30 as before - is taken as the layout. The
+    // stride holding at 0x30 and the unchanged nresults/flags at 0x28/0x2c are
+    // what makes it consistent with the 0.742 measurements on either side.
+    // **Whenever `func` moves, re-measure the other two** - the cheap check is
+    // __vanta_cibase, which reads L->ci, L->base and L->top inside ONE call
+    // and reports each word's distance from base.
     namespace callinfo {
-        // Measured on 0.742 with __vanta_cibase: the frame's first register
-        // lives at +0x00, the top of the register window at +0x08, and the
-        // function TValue one slot below the window at +0x18.
         inline constexpr int base = 0x00;
-        inline constexpr int top = 0x08;
-        inline constexpr int func = 0x18;
+        inline constexpr int func = 0x08;
+        inline constexpr int p = 0x10;           // Proto*, new on 0.744
+        inline constexpr int top = 0x18;
+        inline constexpr int savedpc = 0x20;
         inline constexpr int nresults = 0x28;
         inline constexpr int flags = 0x2c;
     }
 
     // A yield does not unwind the C frame it happened under: luau_execute
     // returns normally and the thread is left marked. Roblox's own protected
-    // call at 0x102C613C1 tests exactly this - movzbl 0x3(%rbx) against 1 and
-    // then 6 - which is where both the offset and the two constants come from.
+    // call tests exactly this, which is where both the offset and the two
+    // constants come from.
     inline constexpr int kStatusYield = 1;
     inline constexpr int kStatusBreak = 6;
 
@@ -225,24 +260,33 @@ namespace luaobj {
     //   lua_tocfunction     reads isC and the C function
     //   lua_pushcclosurek   writes the C function, cont and upvals
     //
-    // The offsets are not quoted here on purpose: `cfunction` and `cont` swap
-    // places between 0.735 and 0.736, so a comment naming either number is
-    // wrong on one of them. The dumper derives all of these - see
-    // vantadump/luaobj.py - and cont is stored self-relative, which is why
-    // reading one back needs decodeContinuation rather than a load.
+    // 0.744's C arm, straight off lua_pushcclosurek's writes:
+    //
+    //     movq %r15, 0x28(%rax)        ; f   - the C function, MOVED from 0x18
+    //     leaq 0x20(%rax), %r15
+    //     xorq %r15, %r12              ; cont stored as cont ^ (closure+0x20)
+    //     movq %r12, 0x20(%rax)        ; cont
+    //     movq %rax, 0x18(%r13)        ; debugname - took the slot f vacated
+    //
+    // and the upvalue copy loop lands at closure+0x30, same as before. Lua
+    // closures keep proto at 0x18 and uprefs at 0x20 (the Z4 dump's l arm,
+    // and what lua_clonefunction reads). nupvalues and stacksize swap bytes
+    // against 0.742: 0.742 had nupvalues at 0x6, 0.744 has preload 0x4,
+    // nupvalues 0x5, stacksize 0x6.
     namespace closure {
         inline constexpr int isC = 0x3;
-        inline constexpr int nupvalues = 0x6;
-        inline constexpr int stacksize = 0x5;
         inline constexpr int preload = 0x4;
+        inline constexpr int nupvalues = 0x5;
+        inline constexpr int stacksize = 0x6;
         inline constexpr int gclist = 0x8;
         inline constexpr int env = 0x10;
 
         inline constexpr int proto = 0x18;    // Lua closures
         inline constexpr int uprefs = 0x20;   // Lua closures
 
-        inline constexpr int cont = 0x20;     // C closures, self-relative
-        inline constexpr int cfunction = 0x18;
+        inline constexpr int debugname = 0x18; // C closures
+        inline constexpr int cont = 0x20;      // C closures, self-relative
+        inline constexpr int cfunction = 0x28;
         inline constexpr int upvals = 0x30;
 
         // How `cont` is stored, which is a property of the build rather than a
@@ -251,18 +295,13 @@ namespace luaobj {
         // subtracting the slot; 0.736's stores `cont - slot` and reads it back
         // by adding; 0.737's stores `cont ^ slot` and reads it back by XOR-ing;
         // 0.738's stores `slot - cont` and reads it back by subtracting the
-        // stored value FROM the slot.
+        // stored value FROM the slot; 0.742 kept 0.738's shape.
         //
-        // 0.736 and 0.738 are both `sub`, and they are opposite encodings. Which
-        // operand is subtracted from which is the whole of it, and a derivation
-        // that reads only the mnemonic cannot tell them apart - which is exactly
-        // how 0.738 shipped a wrong one: vantadump recorded "sub" -> 0 with high
-        // confidence, we decoded `2*slot - cont`, and the client died inside
-        // sUNC's hookfunction check. The state-holder decode had this same bug
-        // and was fixed for it; this one had not been.
-        //
-        // Assuming the wrong one writes a continuation the engine decodes to a
-        // wild pointer, and jumps to it the moment a hooked C function resumes.
+        // 0.744 is back to XOR - `xorq %r15, %r12` above, and the Z4 dump's
+        // CLOSURE_CONT_ENC is vmval3, whose decode is `address ^ stored`. That
+        // is the same arithmetic 0.737 had, so it reuses cont_op 2. Assuming
+        // the wrong one writes a continuation the engine decodes to a wild
+        // pointer, and jumps to it the moment a hooked C function resumes.
         // That took the client down inside sUNC's hookfunction check with every
         // offset around it correct, which is what made it hard to see: nothing
         // was pointing at the wrong field, the field was being written the
@@ -271,7 +310,7 @@ namespace luaobj {
         // This was a boolean until 0.737, which it could not describe - and it
         // answered "added" for it by default, which is the failure above. It is
         // four-valued now: 0 = cont - slot (0.736), 1 = slot + cont (0.735),
-        // 2 = cont ^ slot (0.737), 3 = slot - cont (0.738), keeping the
+        // 2 = cont ^ slot (0.737, 0.744), 3 = slot - cont (0.738), keeping the
         // numbering the boolean had. The dumper reads it off the instructions
         // that produce the stored value, operand order included:
         //     1 added        add rax, <cont>  ; add rax, <off> ; mov [c+off], rax
@@ -279,7 +318,22 @@ namespace luaobj {
         //     2 xor          lea rax, [c+off] ; xor <cont>, rax ; mov [c+off], <cont>
         //     3 slot - cont  lea r13, [c+off] ; mov rax, r13 ; sub <cont>, rax
         //                    ; mov [c+off], rax
-        inline constexpr int cont_op = 0x3;
+        inline constexpr int cont_op = 0x2;
+    }
+
+    // The Z4 dump's enc::value<T, OP> - how Roblox hides pointer-sized fields
+    // in place on 0.744 (global_State::ptrencactive gates the whole scheme).
+    // OP 1 stores `value + slot`, 2 `slot - value`, 3 `value ^ slot`, 4
+    // `value - slot`, where slot is the field's own address. The two helpers
+    // below are the read side; for writes prefer writing through the engine
+    // (the way newcclosure does) or extend these with their inverses.
+    template <int OP>
+    inline uintptr_t encDecode(uintptr_t slot, uint64_t stored)
+    {
+        if constexpr (OP == 1) return static_cast<uintptr_t>(stored - slot);
+        else if constexpr (OP == 2) return static_cast<uintptr_t>(slot - stored);
+        else if constexpr (OP == 3) return static_cast<uintptr_t>(slot ^ stored);
+        else return static_cast<uintptr_t>(stored + slot);
     }
 
     // A read that reports failure instead of faulting.

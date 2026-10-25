@@ -30,7 +30,7 @@ enum VantaPaths {
 enum VantaEnvironment {
     static var robloxVersion: String? {
         guard let info = NSDictionary(
-            contentsOfFile: "/Applications/Roblox.app/Contents/Info.plist") else {
+            contentsOfFile: "/Applications/RobloxPlayer.app/Contents/Info.plist") else {
             return nil
         }
         return info["CFBundleShortVersionString"] as? String

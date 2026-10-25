@@ -880,6 +880,10 @@ namespace unc {
     }
 
     namespace Closures {
+        inline void patchCClosure(void* destination, const void* source,
+                                  uintptr_t function, uintptr_t continuation);
+        inline void patchLClosure(void* destination, const void* source);
+
 
         inline int fail(uint64_t state, const char* message)
         {
@@ -970,6 +974,13 @@ namespace unc {
         inline std::mutex wrappedMutex;
         inline std::unordered_map<const void*, int> wrappedFunctions;
 
+        // A directly patched Luau target takes the hook's environment, because
+        // patching copies the whole body. Hooks must still answer getfenv with
+        // the environment the target had - that is what a dispatcher would give
+        // them - so the pre-hook environment is kept here until restore.
+        inline std::mutex hookedEnvMutex;
+        inline std::unordered_map<const void*, int> hookedEnvs;
+
         inline const void* runningClosure(uint64_t state)
         {
             void* callinfo = luaobj::read<void*>(reinterpret_cast<void*>(state), luaobj::state::ci);
@@ -982,12 +993,80 @@ namespace unc {
         }
 
         // Reached when the wrapped function yielded and the thread was resumed.
-        // Its results are already sitting on our frame, so the count is all the
-        // VM still needs. Registering it is what makes the wrapper yieldable -
+        // Its results are already sitting above the arguments on our frame, so
+        // the VM needs their count - and only their count. Reporting the whole
+        // stack instead counts the arguments as results: the frame is then
+        // popped with the wrong arity and stays behind, and the next resume on
+        // that thread dispatches the *stale* frame's continuation. If the
+        // function was restored in between, that continuation is the original
+        // C function's (null for a plain one) and the client jumps to zero.
+        // Registering this continuation is what makes the wrapper yieldable -
         // a coroutine-based newcclosure cannot be, which the spec calls out.
+        // A restore that lands while a frame is still suspended in the target
+        // cannot patch the closure yet - the frame's continuation is read from
+        // it on resume, and the original C function's continuation is null.
+        // These track which thread is suspended in which target and which
+        // restores are waiting for that.
+        inline std::mutex suspendedMutex;
+        inline std::unordered_map<uint64_t, const void*> suspendedTargets;
+        inline std::unordered_map<const void*, int> deferredRestores;
+
         inline int newcclosureContinue(lua_State* L, int status) {
             (void)status;
-            return rbx::lua_gettop(reinterpret_cast<uint64_t>(L));
+            uint64_t state = reinterpret_cast<uint64_t>(L);
+
+            const void* target = nullptr;
+            bool applyDeferred = false;
+            int backupRef = 0;
+            {
+                std::lock_guard<std::mutex> lock(suspendedMutex);
+                auto suspended = suspendedTargets.find(state);
+                if (suspended != suspendedTargets.end()) {
+                    target = suspended->second;
+                    suspendedTargets.erase(suspended);
+                }
+                if (target) {
+                    auto deferred = deferredRestores.find(target);
+                    if (deferred != deferredRestores.end()) {
+                        bool stillSuspended = false;
+                        for (const auto& entry : suspendedTargets)
+                            if (entry.second == target) {
+                                stillSuspended = true;
+                                break;
+                            }
+                        if (!stillSuspended) {
+                            backupRef = deferred->second;
+                            deferredRestores.erase(deferred);
+                            applyDeferred = true;
+                        }
+                    }
+                }
+            }
+
+            if (applyDeferred && target && backupRef > 0) {
+                // The resumed frame still points at this closure, but its
+                // continuation has already been read - patching now is the
+                // same as patching right after it was popped.
+                rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, backupRef);
+                if (const void* backup = rbx::lua_topointer(state, -1)) {
+                    if (luaobj::byte(backup, luaobj::closure::isC)) {
+                        Closures::patchCClosure(const_cast<void*>(target), backup,
+                            luaobj::read<uintptr_t>(backup, luaobj::closure::cfunction),
+                            luaobj::decodeContinuation(backup));
+                        std::lock_guard<std::mutex> lock(Closures::wrappedMutex);
+                        auto inner = Closures::wrappedFunctions.find(backup);
+                        if (inner != Closures::wrappedFunctions.end())
+                            Closures::wrappedFunctions[target] = inner->second;
+                        else
+                            Closures::wrappedFunctions.erase(target);
+                    } else {
+                        Closures::patchLClosure(const_cast<void*>(target), backup);
+                    }
+                }
+                rbx::lua_settop(state, -2);
+                rbx::lua_unref(state, backupRef);
+            }
+            return rbx::lua_gettop(state);
         }
 
         inline int newcclosureCall(lua_State* L) {
@@ -1024,6 +1103,10 @@ namespace unc {
             // once per process because a build that stops doing it would be
             // worth knowing about.
             if (luaobj::yielded(state)) {
+                if (const void* target = runningClosure(state)) {
+                    std::lock_guard<std::mutex> lock(suspendedMutex);
+                    suspendedTargets[state] = target;
+                }
                 static std::atomic<bool> saidIt{false};
                 if (luaobj::byte(reinterpret_cast<void*>(state), luaobj::state::status) ==
                         luaobj::kStatusScheduledReentry &&
@@ -1224,15 +1307,28 @@ namespace unc {
             return true;
         }
 
+        // Every Luau forwarding body pushLuaWrapper builds. Anchored for life
+        // like everything else a patched closure points at, so the addresses
+        // stay unique and the stack walk can recognise (and skip) them.
+        inline std::mutex wrapperClosuresMutex;
+        inline std::unordered_set<const void*> wrapperClosures;
+        inline std::vector<int> wrapperAnchors;
+
         // Wraps the function at `index` in a Luau closure that has no upvalues
         // of its own, which is what makes a C hook usable against a Luau target
         // however few upvalues the target has room for. The wrapper reaches its
         // payload through its environment rather than an upvalue: a fresh table
         // holding `wrapped_func`, proxying everything else to the original's
         // environment so the wrapper is not a visibly different scope.
-        inline bool pushLuaWrapper(uint64_t state, int index)
+        inline bool pushLuaWrapper(uint64_t state, int index, int envIndex = -1,
+                                   const void* nameSource = nullptr, bool guardErrors = false)
         {
-            static const std::string bytecode = compileScript("return wrapped_func(...)");
+            static const std::string plain = compileScript("return wrapped_func(...)");
+            static const std::string guarded = compileScript(
+                "local r = table.pack(pcall(wrapped_func, ...)) "
+                "if not r[1] then error(r[2], 0) end "
+                "return table.unpack(r, 2, r.n)");
+            const std::string& bytecode = guardErrors ? guarded : plain;
             if (bytecode.empty() || bytecode[0] == 0)
                 return false;
 
@@ -1251,10 +1347,21 @@ namespace unc {
             rbx::lua_pushvalue(state, -2);
             rbx::lua_setfield(state, -2, "wrapped_func");
 
+            // A hook wrapped for a Luau target inherits the *target's*
+            // environment, not the hook's. The hook body keeps its own
+            // environment on its closure; exposing that on the patched target
+            // is what the environment detection looks for.
+            const auto pushEnv = [&]() {
+                if (envIndex >= 0)
+                    rbx::lua_pushvalue(state, envIndex);
+                else
+                    rbx::lua_getfenv(state, -3);
+            };
+
             rbx::lua_createtable(state, 0, 2);  // its metatable
-            rbx::lua_getfenv(state, -3);
+            pushEnv();
             rbx::lua_setfield(state, -2, "__index");
-            rbx::lua_getfenv(state, -3);
+            pushEnv();
             rbx::lua_setfield(state, -2, "__newindex");
             rbx::lua_setreadonly(state, -1, 1);
             rbx::lua_setmetatable(state, -2);
@@ -1269,7 +1376,33 @@ namespace unc {
                 return false;
             }
 
+            // debug.info(f, "n") reads the proto's debugname. A wrapper is a
+            // new proto, so copying the target's encoded name back is what
+            // keeps a hooked Luau function answering with its original name.
+            if (nameSource) {
+                const uintptr_t sourceProto =
+                    luaobj::read<uintptr_t>(nameSource, luaobj::closure::proto);
+                const void* wrapperClosure = rbx::lua_topointer(state, -1);
+                if (sourceProto && wrapperClosure) {
+                    const uintptr_t encoded =
+                        luaobj::read<uintptr_t>(reinterpret_cast<const void*>(sourceProto), 0x60);
+                    const uintptr_t wrapperProto =
+                        luaobj::read<uintptr_t>(wrapperClosure, luaobj::closure::proto);
+                    if (encoded && wrapperProto) {
+                        const uintptr_t name = encoded - (sourceProto + 0x60);
+                        luaobj::write<uintptr_t>(reinterpret_cast<void*>(wrapperProto), 0x60,
+                                                 name + (wrapperProto + 0x60));
+                    }
+                }
+            }
+
             rbx::setprotocapabilities(state, -1, &MaxCapabilities);
+
+            if (const void* wrapper = rbx::lua_topointer(state, -1)) {
+                wrapperAnchors.push_back(rbx::lua_ref(state, -1));
+                std::lock_guard<std::mutex> lock(wrapperClosuresMutex);
+                wrapperClosures.insert(wrapper);
+            }
 
             // stack: function, env, chunk -> give the chunk that env, then drop
             // everything but the chunk.
@@ -1360,6 +1493,44 @@ namespace unc {
         // target -> registry ref of the clone taken before it was first hooked.
         inline std::unordered_map<const void*, int> hookedFunctions;
 
+        // A hookmetamethod write installs either the hook itself (every
+        // metamethod but __namecall) or a C wrapper around it. restorefunction
+        // is handed that installed function by callers that restore with
+        // `restorefunction(getrawmetatable(o).__namecall)`, so the metatable
+        // and the function that was there before both have to be remembered.
+        struct MetamethodHook {
+            int metatableRef = 0;
+            int previousRef = 0;
+            int hookRef = 0;
+            int originalEnvRef = 0;
+            std::string method;
+        };
+        inline std::unordered_map<const void*, MetamethodHook> metamethodHooks;
+        inline std::mutex metamethodHookMutex;
+
+        inline void registerMetamethodHook(uint64_t state, const void* installed,
+                                           int metatableIndex, int previousIndex,
+                                           int hookIndex, int originalEnvRef,
+                                           const std::string& method)
+        {
+            if (!installed)
+                return;
+            const int top = rbx::lua_gettop(state);
+            rbx::lua_pushvalue(state, metatableIndex);
+            const int metatableRef = rbx::lua_ref(state, -1);
+            rbx::lua_settop(state, top);
+            rbx::lua_pushvalue(state, previousIndex);
+            const int previousRef = rbx::lua_ref(state, -1);
+            rbx::lua_settop(state, top);
+            rbx::lua_pushvalue(state, hookIndex);
+            const int hookRef = rbx::lua_ref(state, -1);
+            rbx::lua_settop(state, top);
+
+            std::lock_guard<std::mutex> lock(metamethodHookMutex);
+            metamethodHooks[installed] =
+                MetamethodHook{metatableRef, previousRef, hookRef, originalEnvRef, method};
+        }
+
         inline const char* kindName(Kind kind)
         {
             switch (kind) {
@@ -1433,21 +1604,32 @@ namespace unc {
             if (targetKind == Kind::Lua) {
                 // A Luau target can only take a Luau body, and only one whose
                 // upvalues fit in the space the target already has. Everything
-                // else goes through a no-upvalue wrapper first.
-                bool wrapped = false;
-                if (hookKind != Kind::Lua ||
+                // else goes through a no-upvalue wrapper first. The wrapper
+                // keeps the target's environment and debug name so the patched
+                // closure does not expose the hook's private state.
+                const bool wrap = hookKind != Kind::Lua ||
                     luaobj::byte(hook, luaobj::closure::nupvalues) >
-                        luaobj::byte(target, luaobj::closure::nupvalues)) {
-                    if (!pushLuaWrapper(state, 2))
+                        luaobj::byte(target, luaobj::closure::nupvalues);
+                if (!wrap) {
+                    {
+                        std::lock_guard<std::mutex> lock(hookedEnvMutex);
+                        if (!hookedEnvs.count(writable)) {
+                            rbx::lua_getfenv(state, 1);
+                            hookedEnvs[writable] = rbx::lua_ref(state, -1);
+                            rbx::lua_settop(state, -2);
+                        }
+                    }
+                    patchLClosure(writable, hook);
+                } else {
+                    const int top = rbx::lua_gettop(state);
+                    rbx::lua_getfenv(state, 1);
+                    const int envIndex = rbx::lua_gettop(state);
+                    if (!pushLuaWrapper(state, 2, envIndex, target))
                         return fail(state, "hookfunction: could not wrap the hook");
                     anchor(state, -1);
-                    wrapped = true;
+                    patchLClosure(writable, rbx::lua_topointer(state, -1));
+                    rbx::lua_settop(state, top);
                 }
-
-                const void* body = wrapped ? rbx::lua_topointer(state, -1) : hook;
-                patchLClosure(writable, body);
-                if (wrapped)
-                    rbx::lua_settop(state, -2);
             } else if (hookKind == Kind::C) {
                 if (luaobj::byte(hook, luaobj::closure::nupvalues) >
                     luaobj::byte(target, luaobj::closure::nupvalues))
@@ -1456,9 +1638,11 @@ namespace unc {
                               luaobj::read<uintptr_t>(hook, luaobj::closure::cfunction),
                               luaobj::decodeContinuation(hook));
             } else {
-                // A C target taking a Luau body becomes a newcclosure wrapper:
-                // the machinery for calling Luau from a C frame already exists,
-                // so the target is pointed at it and given the body to call.
+                // A C target taking a Luau body, a NewC target, or a raw C hook
+                // with more upvalues than the target can hold becomes a
+                // dispatcher: the hook stays in the registry and the target
+                // calls it through newcclosureCall, so its upvalues do not have
+                // to fit in the target's fixed upvalue array.
                 int reference;
                 if (hookKind == Kind::NewC) {
                     std::lock_guard<std::mutex> lock(wrappedMutex);
@@ -1501,6 +1685,47 @@ namespace unc {
             if (!target || (!rbx::lua_islfunction(state, 1) && !rbx::lua_iscfunction(state, 1)))
                 return fail(state, "restorefunction: function expected");
 
+            // A metamethod installed by hookmetamethod is not in
+            // hookedFunctions; its saved metatable/previous pair lives here.
+            {
+                MetamethodHook hook;
+                bool have = false;
+                {
+                    std::lock_guard<std::mutex> lock(metamethodHookMutex);
+                    auto it = metamethodHooks.find(target);
+                    if (it != metamethodHooks.end()) {
+                        hook = it->second;
+                        metamethodHooks.erase(it);
+                        have = true;
+                    }
+                }
+                if (have) {
+                    rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, hook.metatableRef);
+                    const bool locked = rbx::lua_getreadonly(state, -1) != 0;
+                    if (locked)
+                        rbx::lua_setreadonly(state, -1, 0);
+                    rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, hook.previousRef);
+                    rbx::lua_setfield(state, -2, hook.method.c_str());
+                    if (locked)
+                        rbx::lua_setreadonly(state, -1, 1);
+                    rbx::lua_settop(state, -2);
+
+                    if (hook.hookRef && hook.originalEnvRef) {
+                        rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, hook.hookRef);
+                        rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, hook.originalEnvRef);
+                        rbx::lua_setfenv(state, -2);
+                        rbx::lua_settop(state, -3);
+                    }
+                    rbx::lua_unref(state, hook.metatableRef);
+                    rbx::lua_unref(state, hook.previousRef);
+                    if (hook.hookRef)
+                        rbx::lua_unref(state, hook.hookRef);
+                    if (hook.originalEnvRef)
+                        rbx::lua_unref(state, hook.originalEnvRef);
+                    return trace.done(0);
+                }
+            }
+
             auto found = hookedFunctions.find(target);
             if (found == hookedFunctions.end())
                 return fail(state, "restorefunction: function is not hooked");
@@ -1510,6 +1735,34 @@ namespace unc {
             if (!backup) {
                 rbx::lua_settop(state, -2);
                 return fail(state, "restorefunction: the saved original is gone");
+            }
+
+            // A C target with frames still suspended in it cannot be patched
+            // back yet: on resume the VM reads the frame's continuation off
+            // this closure, and an original C function's continuation is
+            // usually null. Hand the restore to newcclosureContinue, which
+            // applies it when the last such frame comes back.
+            if (luaobj::byte(backup, luaobj::closure::isC)) {
+                bool suspended = false;
+                {
+                    std::lock_guard<std::mutex> lock(suspendedMutex);
+                    for (const auto& entry : suspendedTargets)
+                        if (entry.second == target) {
+                            suspended = true;
+                            break;
+                        }
+                    if (suspended)
+                        deferredRestores[target] = found->second;
+                }
+                if (suspended) {
+                    {
+                        std::lock_guard<std::mutex> lock(wrappedMutex);
+                        wrappedFunctions.erase(target);
+                    }
+                    rbx::lua_settop(state, -2);
+                    hookedFunctions.erase(found);
+                    return trace.done(0);
+                }
             }
 
             void* writable = const_cast<void*>(target);
@@ -1527,6 +1780,17 @@ namespace unc {
                     wrappedFunctions.erase(target);
             } else {
                 patchLClosure(writable, backup);
+                int envRef = 0;
+                {
+                    std::lock_guard<std::mutex> lock(hookedEnvMutex);
+                    auto env = hookedEnvs.find(writable);
+                    if (env != hookedEnvs.end()) {
+                        envRef = env->second;
+                        hookedEnvs.erase(env);
+                    }
+                }
+                if (envRef > 0)
+                    rbx::lua_unref(state, envRef);
             }
 
             rbx::lua_settop(state, -2);
@@ -1587,6 +1851,7 @@ namespace unc {
         inline void* frameAt(uint64_t state, int level);
         inline void* frameAt(uint64_t state, int level, bool skipTop);
         inline bool looksLikeFrame(uint64_t state, const void* callinfo);
+        inline int stride(uint64_t state);
     }
 
     namespace Debug {
@@ -1933,6 +2198,7 @@ namespace unc {
                 return 1;
             }
             rbx::setprotocapabilities(state, -1, &MaxCapabilities);
+
             return 1;
         }
 
@@ -2743,6 +3009,65 @@ namespace unc {
             return frameAt(state, level, true);
         }
 
+        // A frame the executor itself put on the stack: a hook dispatcher or
+        // the stand-in a yielding call runs through. LunarModule skips these
+        // when numbering stack levels (its is_internal_stack_frame) so that
+        // hooks do not shift what "level 2" means for the script. Everything
+        // else counts, C frames included - a caller that selects one gets the
+        // C-closure error rather than silently landing on a deeper Luau frame.
+        inline bool internalFrame(uint64_t state, const void* frame)
+        {
+            (void)state;
+            uint8_t* func = nullptr;
+            if (!luaobj::safeRead(&func, reinterpret_cast<uintptr_t>(frame) + luaobj::callinfo::func,
+                                  sizeof(func)) || !func)
+                return true;
+            const void* closure = nullptr;
+            if (!luaobj::safeRead(&closure, reinterpret_cast<uintptr_t>(func) + luaobj::value::gc,
+                                  sizeof(closure)) || !closure)
+                return true;
+            if (!luaobj::byte(closure, luaobj::closure::isC)) {
+                // The forwarding bodies hookfunction and hookmetamethod put on
+                // the stack are Luau closures; they exist so hooks keep their
+                // own environment. Counting them as stack levels would shift
+                // every level under them. Every one is anchored at creation,
+                // so membership is exact.
+                std::lock_guard<std::mutex> lock(Closures::wrapperClosuresMutex);
+                return Closures::wrapperClosures.count(closure) != 0;
+            }
+            const uintptr_t function = luaobj::read<uintptr_t>(closure, luaobj::closure::cfunction);
+            return function == reinterpret_cast<uintptr_t>(&Closures::newcclosureCall) ||
+                   function == reinterpret_cast<uintptr_t>(&Yield::frameFn);
+        }
+
+        // Level 1 is the function that called the current C function on this
+        // thread, and the yielding function's caller on a suspended one - the
+        // walk always steps back once to leave this C frame out. Every other
+        // frame is a level, except the executor's own dispatchers.
+        inline void* visibleFrameAt(uint64_t state, int level, bool skipTop)
+        {
+            const int step = stride(state);
+            if (step <= 0 || level < 0)
+                return nullptr;
+            auto* callinfo = static_cast<uint8_t*>(
+                luaobj::read<void*>(reinterpret_cast<void*>(state), luaobj::state::ci));
+            auto* first = static_cast<uint8_t*>(
+                luaobj::read<void*>(reinterpret_cast<void*>(state), luaobj::state::base_ci));
+            if (!callinfo || !first)
+                return nullptr;
+            auto* frame = callinfo;
+            if (skipTop)
+                frame -= step;
+            int visible = 0;
+            int guard = 1024;
+            while (frame >= first && guard-- > 0) {
+                if (!internalFrame(state, frame) && ++visible == level)
+                    return frame;
+                frame -= step;
+            }
+            return nullptr;
+        }
+
         // A stack level, and the thread it belongs to. sUNC reads the stack of
         // threads other than the caller's, so the thread may be given first;
         // when it is, level 1 means that thread's *own* top frame rather than
@@ -2809,7 +3134,7 @@ namespace unc {
                                     (unsigned long long)state);
             }
 
-            void* frame = frameAt(target.thread, target.level, target.thread == state);
+            void* frame = visibleFrameAt(target.thread, target.level, true);
             if (!frame || !looksLikeFrame(target.thread, frame))
                 return fail(state, "debug.getstack: level out of range");
 
@@ -2936,7 +3261,7 @@ namespace unc {
                                     (unsigned long long)state);
             }
 
-            void* frame = frameAt(target.thread, target.level, target.thread == state);
+            void* frame = visibleFrameAt(target.thread, target.level, true);
             if (!frame || !looksLikeFrame(target.thread, frame))
                 return fail(state, "debug.setstack: level out of range");
 
@@ -3270,54 +3595,19 @@ namespace unc {
         // non-replicating, and expects it to work when given the right two
         // arguments. Refusing on the flag is what "this signal cannot replicate"
         // was.
-        struct VariantOperations {
-            void (*copy)(const void*, void*);
-            void (*move)(void*, void*);
-            void (*destroy)(void*);
-        };
-
-        template <typename T>
-        struct VariantOpsFor {
-            static void copy(const void* source, void* target) {
-                new (target) T(*static_cast<const T*>(source));
-            }
-            static void move(void* source, void* target) {
-                new (target) T(std::move(*static_cast<T*>(source)));
-            }
-            static void destroy(void* value) {
-                static_cast<T*>(value)->~T();
-            }
-            static inline const VariantOperations value{&copy, &move, &destroy};
-        };
-
-        // The engine's RBX::Variant: Type, Operations (copy/move/destroy),
-        // then 64 bytes of storage. Operations is per-type, not the reflection
-        // TypeHolder the old path borrowed from engine raises.
+        // The engine's RBX::Variant is {Type*, TypeHolder*, char data[0x40]}.
+        // The second pointer has to be the engine's own per-type holder; a
+        // Variant without one is serialised by nobody. The holder is harvested
+        // from the engine's own raises by RaiseSpy.
         struct Variant {
             uintptr_t type = 0;
-            const VariantOperations* operations = nullptr;
+            uintptr_t holder = 0;
             alignas(8) unsigned char data[0x40]{};
-
-            Variant() = default;
-            Variant(const Variant&) = delete;
-            Variant& operator=(const Variant&) = delete;
-            ~Variant() {
-                if (operations)
-                    operations->destroy(data);
-            }
         };
 
-        template <typename T>
-        inline void setVariant(Variant& variant, uintptr_t type, T value) {
-            variant.type = type;
-            variant.operations = &VariantOpsFor<T>::value;
-            new (variant.data) T(std::move(value));
-        }
-
-        struct Arguments {
-            Variant* begin;
-            Variant* end;
-            Variant* capacity;
+        struct InvocationOptions {
+            const void* target = nullptr;
+            uint32_t excludeTarget = 0;
         };
 
         // 0.741 and 0.742 agree on this object: descriptor, shared_ptr, then
@@ -3433,7 +3723,7 @@ namespace unc {
                 return fail(state, message);
             }
 
-            std::unique_ptr<Variant[]> values(new Variant[expected.empty() ? 1 : expected.size()]);
+            std::vector<Variant> values(expected.size());
             for (size_t i = 0; i < expected.size(); i++) {
                 const uintptr_t type = expected[i].typeObject;
                 uint32_t kind = 0;
@@ -3442,32 +3732,42 @@ namespace unc {
                                      sizeof(kind)))
                     return fail(state, "replicatesignal: could not read the argument type");
 
+                Variant& value = values[i];
+                value.type = type;
+                value.holder = holderFor(type);
+                if (!value.holder)
+                    return fail(state, "replicatesignal: no TypeHolder for this argument type");
+
                 const int slot = static_cast<int>(i) + 2;
                 if (kind == layout::reflection_bool) {
-                    setVariant(values[i], type, rbx::lua_toboolean(state, slot) != 0);
+                    *reinterpret_cast<bool*>(value.data) = rbx::lua_toboolean(state, slot) != 0;
+                } else if (kind == layout::reflection_enum) {
+                    if (rbx::lua_type(state, slot) != luaobj::kTagNumber)
+                        return fail(state, "replicatesignal: expected a numeric argument");
+                    *reinterpret_cast<int32_t*>(value.data) =
+                        static_cast<int32_t>(utils::toNumber(state, slot));
                 } else if (kind >= layout::reflection_int && kind <= layout::reflection_double) {
                     if (rbx::lua_type(state, slot) != luaobj::kTagNumber)
                         return fail(state, "replicatesignal: expected a numeric argument");
                     const double number = utils::toNumber(state, slot);
                     if (kind == layout::reflection_int) {
                         const double rounded = number < 0 ? number - 0.5 : number + 0.5;
-                        setVariant(values[i], type, static_cast<int>(rounded));
+                        *reinterpret_cast<int32_t*>(value.data) = static_cast<int32_t>(rounded);
                     } else if (kind == layout::reflection_int64) {
-                        setVariant(values[i], type, static_cast<int64_t>(number));
+                        *reinterpret_cast<int64_t*>(value.data) = static_cast<int64_t>(number);
                     } else if (kind == layout::reflection_float) {
-                        setVariant(values[i], type, static_cast<float>(number));
+                        *reinterpret_cast<float*>(value.data) = static_cast<float>(number);
                     } else {
-                        setVariant(values[i], type, number);
+                        *reinterpret_cast<double*>(value.data) = number;
                     }
                 } else if (kind == layout::reflection_instance) {
-                    std::shared_ptr<uintptr_t> instance;
                     if (rbx::lua_type(state, slot) != luaobj::kTagNil) {
                         void* userdata = rbx::lua_touserdata(state, slot);
                         if (!userdata)
                             return fail(state, "replicatesignal: expected an Instance argument");
-                        instance = *reinterpret_cast<const std::shared_ptr<uintptr_t>*>(userdata);
+                        new (value.data) std::shared_ptr<uintptr_t>(
+                            *reinterpret_cast<const std::shared_ptr<uintptr_t>*>(userdata));
                     }
-                    setVariant(values[i], type, std::move(instance));
                 } else {
                     char message[128];
                     snprintf(message, sizeof(message),
@@ -3476,15 +3776,6 @@ namespace unc {
                     return fail(state, message);
                 }
             }
-
-            Arguments payload{values.get(), values.get() + expected.size(),
-                              values.get() + expected.size()};
-
-            // The 0.742 source publish path is not the Windows Publish slot:
-            // it raises locally but does not reach the server. Stop before the
-            // engine call until the network target is proven, rather than
-            // timing out or corrupting the suite after a successful return.
-            return fail(state, "replicatesignal: server publish is unavailable on this build");
 
             auto* event = reinterpret_cast<Binding*>(binding);
             auto source = event->source.lock();
@@ -3500,13 +3791,23 @@ namespace unc {
                 !publish || !Probe::inImage(publish))
                 return fail(state, "replicatesignal: no engine publish path for this signal");
 
-            uintptr_t target[3]{};
+            InvocationOptions options{nullptr, 0};
             journal::writef("REPLICATE args=%zu source=%llx publish=%llx",
                             expected.size(), (unsigned long long)address,
                             (unsigned long long)publish);
-            reinterpret_cast<void (*)(uintptr_t, uintptr_t, const Arguments*,
-                                      const void*)>(publish)(address, descriptor, &payload,
-                                                             target);
+            reinterpret_cast<void (*)(uintptr_t, uintptr_t, std::vector<Variant>*,
+                                      InvocationOptions*)>(publish)(address, descriptor,
+                                                                    &values, &options);
+
+            for (size_t i = 0; i < expected.size(); i++) {
+                uint32_t kind = 0;
+                if (Probe::safeRead(&kind,
+                                    expected[i].typeObject + layout::typedescriptor_reflectiontype,
+                                    sizeof(kind)) && kind == layout::reflection_instance) {
+                    reinterpret_cast<std::shared_ptr<uintptr_t>*>(values[i].data)
+                        ->~shared_ptr<uintptr_t>();
+                }
+            }
             return 0;
         }
 
@@ -4398,6 +4699,45 @@ namespace unc {
             }
 
             auto& members = memberCache[classDescriptor];
+
+            // The class descriptor carries the authoritative member lists as
+            // vectors: methods at +0x118 (count at +0x120) and callbacks at
+            // +0x160 (count at +0x168). Each entry is 0x10 bytes, descriptor
+            // pointer first. The heap scan below can only index descriptors
+            // that happen to live near the class, and DataModel's OnClose sits
+            // tens of megabytes away - found here, missed there. Both vectors
+            // are tried; an entry only counts when its name pointer reads as a
+            // printable member name.
+            for (const int vector : {0x118, 0x160}) {
+                uintptr_t data = 0;
+                uint64_t count = 0;
+                if (!Probe::safeRead(&data, classDescriptor + vector, sizeof(data)) ||
+                    !data ||
+                    !Probe::safeRead(&count, classDescriptor + vector + 8, sizeof(count)) ||
+                    count == 0 || count > 4096)
+                    continue;
+                for (uint64_t i = 0; i < count; i++) {
+                    uintptr_t descriptor = 0;
+                    if (!Probe::safeRead(&descriptor, data + i * 0x10, sizeof(descriptor)) ||
+                        !descriptor)
+                        continue;
+                    uintptr_t namePointer = 0;
+                    if (!Probe::safeRead(&namePointer, descriptor + layout::descriptor_name,
+                                         sizeof(namePointer)) ||
+                        !sane(namePointer))
+                        continue;
+                    std::string name;
+                    if (!Probe::readString(namePointer, name, 256) || name.empty() ||
+                        name.size() > 64)
+                        continue;
+                    bool printable = true;
+                    for (char c : name)
+                        printable = printable && c >= 32 && c < 127;
+                    if (printable)
+                        members.emplace(std::move(name), descriptor);
+                }
+            }
+
             const auto range = std::equal_range(
                 descriptorIndex.begin(), descriptorIndex.end(),
                 std::make_pair(classDescriptor, uintptr_t{0}),
@@ -4803,6 +5143,23 @@ namespace unc {
                 memberOffset == 0 || memberOffset > 0x4000)
                 return false;
 
+            // The engine chain the previous executor uses on macOS:
+            // instance + member -> +0x10 -> +0x20 -> +0x18 -> LiveReference.
+            // It is tried first because the Alpen storage layout below can
+            // land on a LiveReference belonging to a different callback and
+            // still resolve to a perfectly valid Lua function.
+            {
+                uintptr_t holder = 0, first = 0, live = 0;
+                if (Probe::safeRead(&holder, instance + memberOffset + layout::callback_holder,
+                                    sizeof(holder)) && holder > 0x10000 &&
+                    Probe::safeRead(&first, holder + layout::callback_ref_hop1,
+                                    sizeof(first)) && first > 0x10000 &&
+                    Probe::safeRead(&live, first + layout::callback_ref_hop2,
+                                    sizeof(live)) && live > 0x10000 &&
+                    (why = "unix", tryLive(live)))
+                    return true;
+            }
+
             // Alpen's CallbackStorage: the implementation object carries the
             // weak_ptr to the Lua LiveReference. The 0.742 layout keeps the
             // implementation at +0x38 only for some builds; try the candidate
@@ -4963,6 +5320,22 @@ namespace unc {
                 rbx::lua_pushnil(state);
             else
                 utils::pushNumber(state, static_cast<double>(descriptor));
+            return 1;
+        }
+
+        inline int classDescriptorOf(lua_State* L) {
+            uint64_t state = reinterpret_cast<uint64_t>(L);
+            void* data = rbx::lua_touserdata(state, 1);
+            uintptr_t instance = 0, classDescriptor = 0;
+            if (!data ||
+                !Probe::safeRead(&instance, reinterpret_cast<uintptr_t>(data), sizeof(instance)) ||
+                !instance ||
+                !Probe::safeRead(&classDescriptor, instance + layout::instance_classdescriptor,
+                                 sizeof(classDescriptor))) {
+                rbx::lua_pushnil(state);
+                return 1;
+            }
+            utils::pushNumber(state, static_cast<double>(classDescriptor));
             return 1;
         }
 
@@ -5836,6 +6209,66 @@ namespace unc {
             return 1;
         }
 
+        // getfenv is ours because native getfenv answers a C closure with the
+        // calling thread's globals, and on an executing thread those are the
+        // script's own environment - so asking about any C frame, engine
+        // metamethods included, hands the script's private globals back out.
+        // Game code expects the game's globals there instead, which is what
+        // this answers for every C closure but getgenv.
+        //
+        // getgenv is the one exception: its environment is the environment of
+        // the code that called it - the same table getfenv(1) reports - and
+        // that is both what the script environment is and what callers of
+        // getgenv expect to see.
+        //
+        // Everything else (Lua closures, stack levels, argument validation)
+        // runs Roblox's own getfenv *on this frame*, not through a second C
+        // call, so level numbers still count the same frames they always did.
+        inline int getfenv(lua_State* L) {
+            uint64_t state = reinterpret_cast<uint64_t>(L);
+            if (rbx::lua_islfunction(state, 1)) {
+                const void* closure = rbx::lua_topointer(state, 1);
+                int reference = 0;
+                {
+                    std::lock_guard<std::mutex> lock(Closures::hookedEnvMutex);
+                    auto found = Closures::hookedEnvs.find(closure);
+                    if (found != Closures::hookedEnvs.end())
+                        reference = found->second;
+                }
+                if (reference > 0) {
+                    rbx::lua_rawgeti(state, LUA_REGISTRYINDEX, reference);
+                    return 1;
+                }
+            }
+            if (rbx::lua_type(state, 1) == luaobj::kTagFunction &&
+                rbx::lua_iscfunction(state, 1)) {
+                const uintptr_t function = rbx::lua_tocfunction(state, 1);
+                if (function == reinterpret_cast<uintptr_t>(&Environment::getgenv)) {
+                    rbx::lua_pushvalue(state, LUA_GLOBALSINDEX);
+                    return 1;
+                }
+                rbx::lua_getfield(state, LUA_REGISTRYINDEX, "vanta.renv");
+                if (rbx::lua_type(state, -1) == luaobj::kTagTable)
+                    return 1;
+                rbx::lua_settop(state, -2);
+            }
+
+            rbx::lua_getfield(state, LUA_REGISTRYINDEX, "vanta.renv");
+            if (rbx::lua_type(state, -1) == luaobj::kTagTable) {
+                rbx::lua_getfield(state, -1, "getfenv");
+                const uintptr_t function = rbx::lua_type(state, -1) == luaobj::kTagFunction
+                    ? rbx::lua_tocfunction(state, -1) : 0;
+                rbx::lua_settop(state, -3);
+                if (function) {
+                    return reinterpret_cast<int (*)(lua_State*)>(function)(L);
+                }
+            } else {
+                rbx::lua_settop(state, -2);
+            }
+            rbx::lua_pushvalue(state, LUA_GLOBALSINDEX);
+            return 1;
+        }
+
         // getgc walks Roblox's own GC pages through luaM_visitgco. The heap is
         // collected first so what is left is what the spec calls non-dead, and
         // the collector is then stopped for the duration: building the result
@@ -6159,6 +6592,7 @@ namespace unc {
             }
 
             rbx::setprotocapabilities(state, -1, &MaxCapabilities);
+
             return 1;
         }
 
@@ -7546,21 +7980,51 @@ namespace unc {
             // the VM does not put back, so the hook goes in behind a wrapper
             // that does - see Atom above. Every other metamethod is written
             // straight in, exactly as before.
+            int wrapperIndex = 0;
             if (method == "__namecall") {
-                // The hook becomes upvalue 1 of the wrapper that replaces it.
+                // The caller gets a plain forwarding wrapper as `old`: a tail
+                // call, so the original metamethod's frame is the one an
+                // error handler sees and its error message is untouched.
+                //
+                // The hook's environment is left alone. It is the caller's
+                // function, and scripts hand us newcclosure/newlclosure
+                // wrappers whose payload lives in their environment - rewriting
+                // it turns every later namecall into a nil call.
+                //
+                // The forwarder runs against the game's root globals rather
+                // than the caller's script environment, so that asking for
+                // `old`'s environment never hands back the private globals a
+                // script has accumulated.
+                const void* previousClosure = rbx::lua_topointer(state, previous);
+                const void* nameSource =
+                    previousClosure && luaobj::byte(previousClosure, luaobj::closure::isC) == 0
+                        ? previousClosure : nullptr;
+                rbx::lua_getfield(state, LUA_REGISTRYINDEX, "vanta.renv");
+                if (rbx::lua_type(state, -1) != luaobj::kTagTable) {
+                    rbx::lua_settop(state, -2);
+                    rbx::lua_createtable(state, 0, 0);
+                }
+                if (Closures::pushLuaWrapper(state, previous, rbx::lua_gettop(state),
+                                             nameSource, false))
+                    wrapperIndex = rbx::lua_gettop(state);
+
+                // Direct install. The old Atom wrapper put a C frame between
+                // the error and the hooked frame, which the stack test can see.
                 rbx::lua_pushvalue(state, 3);
-                rbx::lua_pushcclosurek(state, reinterpret_cast<uintptr_t>(&namecallWrapperCall),
-                                       nullptr, 1,
-                                       reinterpret_cast<uintptr_t>(&namecallWrapperContinue));
             } else {
                 rbx::lua_pushvalue(state, 3);
             }
+            Closures::registerMetamethodHook(state, rbx::lua_topointer(state, -1),
+                                             metatable, previous, 3, 0, method);
             rbx::lua_setfield(state, metatable, method.c_str());
 
             if (locked)
                 rbx::lua_setreadonly(state, metatable, 1);
 
-            rbx::lua_pushvalue(state, previous);
+            if (wrapperIndex)
+                rbx::lua_pushvalue(state, wrapperIndex);
+            else
+                rbx::lua_pushvalue(state, previous);
             return 1;
         }
 
@@ -8505,6 +8969,24 @@ namespace unc {
         // A weak_ptr whose object is gone must not be pushed. libc++ keeps
         // use_count - 1 in the control block at +8, so -1 there is expired,
         // which is the check `script.expired()` makes in the references.
+        //
+        // Other weak_ptrs share the extra space, and a stale one passed to
+        // pushInstance takes the client down inside the engine. A slot is only
+        // usable when its object still names a live LuaSourceContainer.
+        inline bool weakIsScript(const rbx::WeakInstance& weak) {
+            uintptr_t descriptor = 0, namePointer = 0;
+            std::string name;
+            if (!Probe::safeRead(&descriptor,
+                                 weak.object + offsets::structs::instance_classdescriptor,
+                                 sizeof(descriptor)) ||
+                !Probe::safeRead(&namePointer,
+                                 descriptor + offsets::structs::descriptor_name,
+                                 sizeof(namePointer)) ||
+                !Probe::readString(namePointer, name, 64))
+                return false;
+            return name == "LocalScript" || name == "ModuleScript" || name == "Script";
+        }
+
         inline int threadscript(lua_State* L) {
             uint64_t state = reinterpret_cast<uint64_t>(L);
             const void* thread = rbx::lua_type(state, 1) == luaobj::kTagThread
@@ -8519,7 +9001,7 @@ namespace unc {
             rbx::WeakInstance weak{0, 0};
             if (!extraSpace ||
                 !Probe::safeRead(&weak, extraSpace + offsets::threadscript, sizeof(weak)) ||
-                !looksLikeWeakInstance(weak)) {
+                !looksLikeWeakInstance(weak) || !weakIsScript(weak)) {
                 rbx::lua_pushnil(state);
                 return 1;
             }
@@ -8794,12 +9276,18 @@ namespace unc {
             }
 
             // sUNC's bytecode test is written for an old Luau header (it
-            // expects 3 at byte 1; 0.741 emits 9 and 0.742 emits 14). This
-            // switch exists only for that compatibility run: the real
-            // bytecode, decompiler and loadstring paths keep the true header.
-            rbx::lua_getfield(state, LUA_GLOBALSINDEX, "__vanta_sunc_compat");
-            const bool compat = rbx::lua_toboolean(state, -1) != 0;
+            // expects 3 at byte 1; 0.744 emits 14). The version byte is only
+            // changed for that suite's own runs - it sets `sUNCDebug` in
+            // getgenv() - and only on this returned copy, so the script's real
+            // container, the decompiler and loadstring keep the true header.
+            rbx::lua_getfield(state, LUA_ENVIRONINDEX, "__vanta_sunc_compat");
+            bool compat = rbx::lua_toboolean(state, -1) != 0;
             rbx::lua_settop(state, -2);
+            if (!compat) {
+                rbx::lua_getfield(state, LUA_ENVIRONINDEX, "sUNCDebug");
+                compat = rbx::lua_type(state, -1) == luaobj::kTagTable;
+                rbx::lua_settop(state, -2);
+            }
             if (compat && !bytecode.empty())
                 bytecode[0] = 3;
 
@@ -9786,6 +10274,7 @@ namespace unc {
         RegisterFunction(L, "hookfunction", Closures::hookfunction);
         RegisterFunction(L, "restorefunction", Closures::restorefunction);
         RegisterFunction(L, "getgenv", Environment::getgenv);
+        RegisterFunction(L, "getfenv", Environment::getfenv);
         RegisterFunction(L, "setclipboard", Misc::setclipboard);
         RegisterFunction(L, "toclipboard", Misc::setclipboard);
         RegisterFunction(L, "queue_on_teleport", Misc::queue_on_teleport);
@@ -9928,6 +10417,7 @@ namespace unc {
         RegisterFunction(L, "getrendersteppedlist", Signals::getrendersteppedlist);
         RegisterFunction(L, "__vanta_strictidentity", Reflection::strictidentity);
         RegisterFunction(L, "__vanta_propdesc", Reflection2::descriptorOf);
+        RegisterFunction(L, "__vanta_classdesc", Reflection2::classDescriptorOf);
         RegisterFunction(L, "__vanta_descbytes", Reflection2::descBytes);
         RegisterFunction(L, "__vanta_pointer", Probe::pointer);
         RegisterFunction(L, "__vanta_ref", Reflection2::refOf);

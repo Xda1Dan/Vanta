@@ -28,7 +28,7 @@ Vanta/                          # ACTIVE PROJECT
 
 # References (not part of the build)
 unix-roblox/                   # proven Nexa implementation + offset dumper
-luau-0.742/                    # matching Luau VM source
+luau-0.744/                    # matching Luau VM source (tag 0.744)
 LunarModule/                   # Windows executor, architecture reference
 roblox-macplayer-internals/    # RE notes for macOS build 0.742
 design/                        # UI design language and mockups
@@ -58,7 +58,8 @@ bash ui/build.sh          # -> build/ui/Vanta Prototype.app
 
 The launcher:
 
-1. Strips Roblox's codesign when the signature is still valid.
+1. Strips Roblox's codesign when the signature is still valid (the pinned
+   0.744 client is ad-hoc re-signed once at install; see below).
 2. Runs `vanta-machopatch --status` and, if any executor `LC_LOAD_*_DYLIB`
    remains in `RobloxPlayer` (e.g. a stale `libNexa.dylib`), removes it with
    `--remove`. Two executors in one client is what produced the grey-screen

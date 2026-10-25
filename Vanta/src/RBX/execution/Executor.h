@@ -203,6 +203,14 @@ inline void ExecuteBytecode(uint64_t state_ptr, const std::string& bc)
     
     rbx::setprotocapabilities(rbx_thread, -1, &MaxCapabilities);
 
+    // The thread's globals stay the sandboxed table luaL_sandboxthread just
+    // installed - the same table the chunk was loaded with. Luau answers
+    // getfenv on a C function with the thread's globals, and both suites the
+    // tree is tested against read that answer: the getgenv check wants it to
+    // be the running script's environment, and a clean environment for C
+    // frames is arranged where the frame appears instead (hookmetamethod's
+    // forwarding frame), not by moving the thread's globals.
+
     // The thread is anchored by `threadRef` only while it is being set up, and
     // released the moment the scheduler owns it. mac and stu do the same;
     // Vicna never refs the thread at all (`lua_newthread` then `lua_pop`), and

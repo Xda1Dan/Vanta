@@ -155,10 +155,15 @@ def restore(binary, quiet=False):
         print("restored original from %s" % backup)
 
 
+def _default_binary():
+    path = "/Applications/Roblox.app/Contents/MacOS/RobloxPlayer"
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--binary", default="/Applications/Roblox.app/Contents/MacOS/RobloxPlayer")
+    parser.add_argument("--binary", default=_default_binary())
     parser.add_argument("--dylib", help="absolute path to libNexa.dylib")
     parser.add_argument("--restore", action="store_true", help="undo the patch")
     parser.add_argument("--status", action="store_true", help="report whether the patch is present")

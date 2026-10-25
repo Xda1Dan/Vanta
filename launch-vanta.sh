@@ -2,7 +2,13 @@
 # Vanta launcher script
 
 DYLIB_PATH="/Users/user/Documents/Vanta/Vanta/build/libVanta.dylib"
-ROBLOX_PATH="/Applications/Roblox.app/Contents/MacOS/RobloxPlayer"
+# Roblox installs as Roblox.app; some staged/pinned builds use RobloxPlayer.app.
+if [ -d /Applications/Roblox.app ]; then
+    ROBLOX_APP="/Applications/Roblox.app"
+elif [ -d /Applications/RobloxPlayer.app ]; then
+    ROBLOX_APP="/Applications/RobloxPlayer.app"
+fi
+ROBLOX_PATH="$ROBLOX_APP/Contents/MacOS/RobloxPlayer"
 PATCHER="/Users/user/Documents/Vanta/Vanta/build/vanta-machopatch"
 PLACE_ID="${1:-90441122676618}"
 

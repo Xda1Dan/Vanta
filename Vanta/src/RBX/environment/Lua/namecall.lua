@@ -480,14 +480,12 @@ end
 -- "Running" means exactly that: a script with a live thread behind it. Walking
 -- the threads also keeps actor scripts out for free, since an actor runs in its
 -- own Luau state and its threads are on a different heap than the one walked.
---
--- The entries are the client-side classes only. A plain Script can outlive a
--- thread from the server's side of the place and is not what a client-side
--- list means; sUNC checks the class of every entry ("First value is not a
--- ModuleScript or LocalScript"), so a Script is not admitted even with a thread.
+-- The spec asks for every LuaSourceContainer, including plain Scripts; the
+-- suite then picks the one it needs by RunContext.
 local function isRunningScript(instance)
     return typeof(instance) == "Instance"
-        and (instance:IsA("LocalScript") or instance:IsA("ModuleScript"))
+        and (instance:IsA("LocalScript") or instance:IsA("ModuleScript")
+             or instance:IsA("Script"))
 end
 
 getgenv().getrunningscripts = function()
@@ -3001,6 +2999,35 @@ getgenv().dofile = function(path)
         error(err, 2)
     end
     return chunk()
+end
+
+-- The engine refuses a require from an identity-8 thread when the module is a
+-- regular script: "Cannot require a non-RobloxScript module from a
+-- RobloxScript". A module require at identity 2 is the normal game-script path
+-- and succeeds. Try the caller's identity first so RobloxScript modules keep
+-- working, and retry only on that exact gate.
+do
+    local engineRequire = require
+    local getIdentity = getgenv().getthreadidentity
+    local setIdentity = getgenv().setthreadidentity
+    if type(engineRequire) == "function" and getIdentity and setIdentity then
+        getgenv().require = function(module)
+            local ok, result = pcall(engineRequire, module)
+            if ok then return result end
+            if type(result) ~= "string" or not string.find(
+                result, "Cannot require a non-RobloxScript module from a RobloxScript", 1, true) then
+                error(result, 2)
+            end
+            local previous = getIdentity()
+            if not pcall(setIdentity, 2) then
+                error(result, 2)
+            end
+            local retryOk, retryResult = pcall(engineRequire, module)
+            pcall(setIdentity, previous)
+            if retryOk then return retryResult end
+            error(retryResult, 2)
+        end
+    end
 end
 
 -- Every function the executor exposes should read as a C closure. Much of this
