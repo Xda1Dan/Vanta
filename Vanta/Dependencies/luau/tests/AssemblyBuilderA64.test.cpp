@@ -7,7 +7,6 @@
 
 #include <string.h>
 
-
 using namespace Luau::CodeGen;
 using namespace Luau::CodeGen::A64;
 
@@ -36,7 +35,7 @@ class AssemblyBuilderA64Fixture
 public:
     bool check(void (*f)(AssemblyBuilderA64& build), std::vector<uint32_t> code, std::vector<uint8_t> data = {}, unsigned int features = 0)
     {
-        AssemblyBuilderA64 build(/* logText= */ false, features);
+        AssemblyBuilderA64 build(/* logger= */ nullptr, features);
 
         f(build);
 
@@ -591,7 +590,9 @@ TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "SIMDMath")
 
 TEST_CASE("LogTest")
 {
-    AssemblyBuilderA64 build(/* logText= */ true);
+    AssemblyOptions options;
+    LogBuilder logger(options);
+    AssemblyBuilderA64 build(/* logger= */ &logger, /* features= */ 0);
 
     build.add(sp, sp, uint16_t(4));
     build.add(w0, w1, w2);
@@ -695,7 +696,7 @@ TEST_CASE("LogTest")
  ret
 )";
 
-    CHECK("\n" + build.text == expected);
+    CHECK("\n" + logger.text == expected);
 }
 
 TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Nop")

@@ -9,13 +9,9 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(LuauExportValueSyntax)
-LUAU_FASTFLAG(LuauConst2)
 LUAU_FASTFLAG(DebugLuauNoInline)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
-LUAU_FASTFLAG(LuauErrorTolerantPrettyPrinting)
-LUAU_FASTFLAG(LuauCstExprGroup)
-LUAU_FASTFLAG(LuauCstTypeGroup)
-LUAU_FASTFLAG(LuauTableEntriesDontNeedToMatchIndent)
+LUAU_FASTFLAG(LuauExperimentalIfLocalSyntax)
 
 using namespace Luau;
 
@@ -44,7 +40,7 @@ TEST_CASE("prettyPrint_AstStatBlock_overload")
     AstNameTable names(allocator);
     ParseResult result = Parser::parse(code.c_str(), code.size(), names, allocator, options);
     REQUIRE(result.root != nullptr);
-    
+
     std::string printed = prettyPrint(*result.root);
     CHECK_EQ("local a = 1", printed);
 }
@@ -90,6 +86,128 @@ TEST_CASE("if_stmt_spaces_around_tokens")
 
     const std::string nine = R"( if This then Once() elseif true    then Other() end)";
     CHECK_EQ(nine, prettyPrint(nine).code);
+}
+
+TEST_CASE("if_local")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string local = R"(if local result = getValue() then use(result) end)";
+    CHECK_EQ(local, prettyPrint(local).code);
+
+    const std::string konst = R"(if const item = map[key] then process(item) end)";
+    CHECK_EQ(konst, prettyPrint(konst).code);
+
+    const std::string chain = R"(if ready then start() elseif local hit = raycast() then use(hit) end)";
+    CHECK_EQ(chain, prettyPrint(chain).code);
+}
+
+TEST_CASE("if_local_preserves_interior_spacing")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string spaced = R"(if     local   result   =   getValue() then use(result) end)";
+    CHECK_EQ(spaced, prettyPrint(spaced).code);
+}
+
+TEST_CASE("if_local_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string typed = R"(if local res : string = foo() then print(res) end)";
+    CHECK_EQ(typed, prettyPrint(typed, {}, /* withTypes */ true).code);
+
+    const std::string stripped = prettyPrint(typed).code;
+    CHECK(stripped.find("string") == std::string::npos);
+    CHECK(stripped.find("foo()") != std::string::npos);
+}
+
+TEST_CASE("elseif_local_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string typed = R"(if cond then use() elseif local res : string = foo() then print(res) end)";
+    CHECK_EQ(typed, prettyPrint(typed, {}, /* withTypes */ true).code);
+}
+
+TEST_CASE("if_local_type_annotation_preserves_interior_spacing")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string spaced = R"(if local res   :   string = foo() then print(res) end)";
+    CHECK_EQ(spaced, prettyPrint(spaced, {}, /* withTypes */ true).code);
+}
+
+TEST_CASE("if_local_without_annotation_with_types")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string local = R"(if local result = getValue() then use(result) end)";
+    CHECK_EQ(local, prettyPrint(local, {}, /* withTypes */ true).code);
+
+    const std::string konst = R"(if const item = map[key] then process(item) end)";
+    CHECK_EQ(konst, prettyPrint(konst, {}, /* withTypes */ true).code);
+}
+
+TEST_CASE("if_const_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string typed = R"(if const item : number = map[key] then process(item) end)";
+    CHECK_EQ(typed, prettyPrint(typed, {}, /* withTypes */ true).code);
+}
+
+TEST_CASE("if_local_complex_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string table = R"(if local xs : {number} = getList() then use(xs) end)";
+    CHECK_EQ(table, prettyPrint(table, {}, /* withTypes */ true).code);
+
+    const std::string optional = R"(if local hit : Instance? = raycast() then use(hit) end)";
+    CHECK_EQ(optional, prettyPrint(optional, {}, /* withTypes */ true).code);
+}
+
+TEST_CASE("if_local_expression")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string local = R"(local y = if local result = getValue() then result else fallback)";
+    CHECK_EQ(local, prettyPrint(local).code);
+
+    const std::string konst = R"(local y = if const item = map[key] then item else none)";
+    CHECK_EQ(konst, prettyPrint(konst).code);
+
+    const std::string chain = R"(local y = if ready then start elseif local hit = raycast() then hit else none)";
+    CHECK_EQ(chain, prettyPrint(chain).code);
+}
+
+TEST_CASE("if_local_expression_preserves_interior_spacing")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string spaced = R"(local y = if     local   result   =   getValue() then result else none)";
+    CHECK_EQ(spaced, prettyPrint(spaced).code);
+}
+
+TEST_CASE("if_local_expression_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string typed = R"(local y = if local res : string = foo() then res else bar)";
+    CHECK_EQ(typed, prettyPrint(typed, {}, /* withTypes */ true).code);
+
+    const std::string stripped = prettyPrint(typed).code;
+    CHECK(stripped.find("string") == std::string::npos);
+    CHECK(stripped.find("foo()") != std::string::npos);
+}
+
+TEST_CASE("if_const_expression_type_annotation")
+{
+    ScopedFastFlag sff{FFlag::LuauExperimentalIfLocalSyntax, true};
+
+    const std::string typed = R"(local y = if const item : number = map[key] then item else none)";
+    CHECK_EQ(typed, prettyPrint(typed, {}, /* withTypes */ true).code);
 }
 
 TEST_CASE("elseif_chains_indent_sensibly")
@@ -917,6 +1035,28 @@ TEST_CASE_FIXTURE(Fixture, "attach_types")
         local t:{a:number,b:boolean}={a=1,b=false}
         local function fn(): number
             return 10
+        end
+    )";
+
+    CHECK_EQ(expected, decorateWithTypes(code));
+}
+
+TEST_CASE_FIXTURE(Fixture, "attach_type_negate")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    const std::string code = R"(
+        local function foo(x: unknown)
+            assert(x)
+            local b = x
+            return b
+        end
+    )";
+    const std::string expected = R"(
+        local function foo(x: unknown): negate<false?>
+            assert(x)
+            local b:negate<false?>=x
+            return b
         end
     )";
 
@@ -2124,8 +2264,9 @@ class Point
     function length(self)
         return 100
     end
-    function new()
-        return Point { x = 0, y = 0 }
+    function __init(self)
+        self.x = 0
+        self.y = 0
     end
 end
     )";
@@ -2142,8 +2283,9 @@ class Point
         return 100
     end
     public x
-    function new(): Point
-        return Point { x = 0, y = 0 }
+    function __init(self)
+        self.x = 0
+        self.y = 0
     end
     public y
 end
@@ -2161,8 +2303,9 @@ class Point
         return 100
     end
     public x
-    public function new(): Point
-        return Point { x = 0, y = 0 }
+    public function __init(self)
+        self.x = 0
+        self.y = 0
     end
     public y
 end
@@ -2170,8 +2313,45 @@ end
     CHECK_EQ(code, prettyPrint(code, {}, true).code);
 }
 
+TEST_CASE("simple_class_inheritance")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+
+    std::string code = R"(
+class Animal
+    public species: string
+end
+
+class Cat extends Animal
+    public meowMult: number
+end
+    )";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
+TEST_CASE("class_with_private_members")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+
+    std::string code = R"(
+class Point
+    private _x: number
+    public y: number
+    private function _mag(self)
+        return self._x
+    end
+    public function getMag(self)
+        return self:_mag()
+    end
+end
+    )";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
 TEST_CASE("prettyPrint_function_attributes")
 {
+    ScopedFastFlag sff{FFlag::LuauExportValueSyntax, true};
+
     std::string code = R"(
         @native
         function foo()
@@ -2212,7 +2392,6 @@ TEST_CASE("prettyPrint_function_attributes")
     CHECK_EQ(code, prettyPrint(code, {}, true).code);
 
     {
-
         ScopedFastFlag noInline{FFlag::DebugLuauNoInline, true};
         code = R"(
         @debugnoinline
@@ -2220,6 +2399,82 @@ TEST_CASE("prettyPrint_function_attributes")
         )";
         CHECK_EQ(code, prettyPrint(code, {}, true).code);
     }
+
+    code = R"=(
+    @[deprecated {
+        use = "newApi()",
+        reason = "newApi is faster and supports all value types.",
+    }]
+    local function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = R"=(
+    @[deprecated {use = "newApi()"}, native]
+    local function oldFastApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = R"=(
+    @[deprecated({use = "newApi()"})]
+    local function oldFastApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = R"=(
+    @[deprecated {
+        use = "newApi()",
+        reason = "newApi is faster and supports all value types.",
+    }, native]
+    function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = R"=(
+    @checked
+    @[    deprecated  , native    ]
+    function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+
+    code = R"=(
+    @checked
+    @[    deprecated  , native    ]
+    export function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+    {
+        // We don't currently have any attributes which accept a single string, so we ignore parse errors for this example.
+        code = R"=(
+    @checked
+    @[    why  "it's bad"     , native    ]
+    const function oldApi()
+    end
+    )=";
+
+        CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+    }
+
+    code = R"=(
+    local foo = @checked
+    @[    deprecated  , native    ]
+    function()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
 }
 
 TEST_CASE("pretty_print_explicit_type_instantiations")
@@ -2242,7 +2497,7 @@ TEST_CASE("pretty_print_explicit_type_instantiations")
 
 TEST_CASE("export")
 {
-    ScopedFastFlag sffs[] = {{FFlag::LuauExportValueSyntax, true}, {FFlag::LuauConst2, true}};
+    ScopedFastFlag sffs[] = {{FFlag::LuauExportValueSyntax, true}};
     std::string code;
 
     code = (R"(
@@ -2317,8 +2572,6 @@ end
 
 TEST_CASE("pretty_print_incomplete_expr_group")
 {
-    ScopedFastFlag fflags[] = {{FFlag::LuauErrorTolerantPrettyPrinting, true}, {FFlag::LuauCstExprGroup, true}};
-
     std::string code = "local x = (1 + 2";
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 
@@ -2328,8 +2581,6 @@ TEST_CASE("pretty_print_incomplete_expr_group")
 
 TEST_CASE("pretty_print_incomplete_type_group")
 {
-    ScopedFastFlag fflags[] = {{FFlag::LuauErrorTolerantPrettyPrinting, true}, {FFlag::LuauCstTypeGroup, true}};
-
     std::string code = "type t = (number";
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 
@@ -2339,7 +2590,6 @@ TEST_CASE("pretty_print_incomplete_type_group")
 
 TEST_CASE("pretty_print_incomplete_explicit_type_instantiations")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     // Parser branch for explicit type instantiations is triggered by two '<' tokens
     std::string code = "f<<A, B, C...>() t.f<<A, B, C...>() t:f<<A, B, C>()";
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2350,7 +2600,6 @@ TEST_CASE("pretty_print_incomplete_explicit_type_instantiations")
 
 TEST_CASE("pretty_print_incomplete_function_call")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     // Parser branch for function call is triggered by a '(' token
     std::string code = "print('hello world'";
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2361,7 +2610,6 @@ TEST_CASE("pretty_print_incomplete_function_call")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_index_expr")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     // Parser branch for index expr is triggered by a '[' token
     std::string code = "local a = {1, 2, 3} local b = a[2";
 
@@ -2370,7 +2618,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_index_expr")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_function_expr")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 local a = function<T(x : T, y: string, ... : number)
     return x
@@ -2381,9 +2628,6 @@ end)";
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_table_expr")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
-    ScopedFastFlag fflag2{FFlag::LuauTableEntriesDontNeedToMatchIndent, true};
-
     std::string code = R"(local a = { a = 1 ["b"] = 2 })";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2395,7 +2639,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_table_expr")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_if_else_expr")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(local a = if true 1 else 2)";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2403,7 +2646,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_if_else_expr")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_do_stat")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 do
     print("hello world")
@@ -2414,7 +2656,6 @@ do
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_repeat_stat")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 repeat
     print("hello world")
@@ -2430,7 +2671,6 @@ repeat
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_for_stat")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 for i : number = 1 10 do
     print(i)
@@ -2442,7 +2682,6 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_assign_stat")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 x , y 1, 2
 )";
@@ -2452,7 +2691,6 @@ x , y 1, 2
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_generic_typepack")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = "type foo<T, U..., V> = bar<T, U..., V>";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2460,7 +2698,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_generic_typepack")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_type_alias")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = "type foo number";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2468,7 +2705,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_type_alias")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_type_reference")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = "type foo = Bar<number";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2476,7 +2712,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_type_reference")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_table_type")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(type foo = { ["hello" : number })";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2508,7 +2743,6 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_table_type")
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_function_type")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = R"(
 local function foo() : (number, string -> ()
 end
@@ -2531,7 +2765,6 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_typeof_type")
 {
-    ScopedFastFlag fflag{FFlag::LuauErrorTolerantPrettyPrinting, true};
     std::string code = "type foo = typeof x)";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
@@ -2541,6 +2774,39 @@ TEST_CASE_FIXTURE(Fixture, "pretty_print_incomplete_typeof_type")
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 
     code = "type foo = typeof x";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+}
+
+TEST_CASE("pretty_print_incomplete_attr_list")
+{
+    std::string code = R"=(
+    @unknown
+    @[deprecated  , native
+    function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+}
+
+TEST_CASE("pretty_print_incomplete_attr_args")
+{
+    std::string code = R"=(
+    @[deprecated ({ use = "newApi()"} ]
+    function oldApi()
+    end
+    )=";
+
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+}
+
+TEST_CASE("pretty_print_readonly_indexer")
+{
+    std::string code = R"(
+        local _t: { read number } = {}
+        local _u: { read [string]: boolean }
+    )";
 
     CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 }

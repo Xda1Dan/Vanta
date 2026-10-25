@@ -12,9 +12,6 @@
 
 #include "lstate.h"
 
-LUAU_FASTFLAG(LuauCodegenSuggestArgumentRegisterX64)
-LUAU_FASTFLAG(LuauClosureUsageCounter)
-
 namespace Luau
 {
 namespace CodeGen
@@ -50,12 +47,12 @@ void emitInstCall(IrRegAllocX64& regs, AssemblyBuilderX64& build, ModuleHelpers&
         RegisterX64 argi = rsi;
         RegisterX64 argend = rdi;
 
-        build.mov(proto, qword[ccl + offsetof(Closure, l.p)]);
-
         // Switch current Closure
         build.mov(sClosure, ccl); // Last use of 'ccl'
 
         build.mov(ci, qword[rState + offsetof(lua_State, ci)]);
+
+        build.mov(proto, qword[ci + offsetof(CallInfo, p)]);
 
         Label fillnil, exitfillnil;
 
@@ -369,18 +366,8 @@ void emitInstForGLoop(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, in
     // This is a fast-path for builtin table iteration, tag check for 'ra' has to be performed before emitting this instruction
 
     // Registers are chosen in this way to simplify fallback code for the node part
-    RegisterX64 table{};
-    RegisterX64 index{};
-    if (FFlag::LuauCodegenSuggestArgumentRegisterX64)
-    {
-        table = IrCallWrapperX64::suggestArgumentRegister<1>(SizeX64::qword, build);
-        index = IrCallWrapperX64::suggestArgumentRegister<2>(SizeX64::qword, build);
-    }
-    else
-    {
-        table = (build.abi == ABIX64::Windows) ? rdx : rsi;
-        index = (build.abi == ABIX64::Windows) ? r8 : rdx;
-    }
+    RegisterX64 table = IrCallWrapperX64::suggestArgumentRegister<1>(SizeX64::qword, build);
+    RegisterX64 index = IrCallWrapperX64::suggestArgumentRegister<2>(SizeX64::qword, build);
 
     RegisterX64 elemPtr = rax;
 

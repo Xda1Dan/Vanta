@@ -172,8 +172,6 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_function_resolution_singleton_parameters"
 
 TEST_CASE_FIXTURE(Fixture, "overloaded_function_call_with_singletons_mismatch")
 {
-    DOES_NOT_PASS_NEW_SOLVER_GUARD();
-
     CheckResult result = check(R"(
         function f(g: ((true, string) -> ()) & ((false, number) -> ()))
             g(true, 37)
@@ -215,19 +213,7 @@ TEST_CASE_FIXTURE(Fixture, "enums_using_singletons_mismatch")
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     if (!FFlag::DebugLuauForceOldSolver)
-    {
-        // clang-format off
-        const std::string expected =
-            "Expected this to be '\"bar\" | \"baz\" | \"foo\"', but got '\"bang\"'; \n"
-            "this is because \n"
-            "	 * the 1st component of the union is `\"foo\"`, and `\"bang\"` is not a subtype of `\"foo\"`\n"
-            "	 * the 2nd component of the union is `\"bar\"`, and `\"bang\"` is not a subtype of `\"bar\"`\n"
-            "	 * the 3rd component of the union is `\"baz\"`, and `\"bang\"` is not a subtype of `\"baz\"`"
-        ;
-        // clang-format on
-
-        CHECK_LONG_STRINGS_EQ(expected, toString(result.errors[0]));
-    }
+        CHECK_EQ(R"(Expected this to be '"bar" | "baz" | "foo"', but got '"bang"')", toString(result.errors[0]));
     else
         CHECK_EQ(
             "Expected this to be '\"bar\" | \"baz\" | \"foo\"', but got '\"bang\"'; none of the union options are compatible",
@@ -511,7 +497,7 @@ TEST_CASE_FIXTURE(Fixture, "widen_the_supertype_if_it_is_free_and_subtype_has_si
 
     CHECK_EQ(R"("hi")", toString(requireTypeAtPosition({3, 18})));
     // should be <a...>((string) -> a..., string) -> () but needs lower bounds calculation
-    CHECK_EQ("<a, b...>((string) -> (b...), a) -> ()", toString(requireType("foo")));
+    CHECK_EQ("<T, U...>((string) -> (U...), T) -> ()", toString(requireType("foo")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "return_type_of_f_is_not_widened")
@@ -529,7 +515,7 @@ TEST_CASE_FIXTURE(Fixture, "return_type_of_f_is_not_widened")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ(R"("hi")", toString(requireTypeAtPosition({3, 23})));
-    CHECK_EQ(R"(<a, b, c...>((string) -> (a, c...), b) -> "hello"?)", toString(requireType("foo")));
+    CHECK_EQ(R"(<T, U, V...>((string) -> (T, V...), U) -> "hello"?)", toString(requireType("foo")));
     // CHECK_EQ(R"(<a, b...>((string) -> ("hello"?, b...), a) -> "hello"?)", toString(requireType("foo")));
 }
 
@@ -857,6 +843,31 @@ TEST_CASE_FIXTURE(Fixture, "cli_184125")
         end
     )"));
 }
+
+TEST_CASE_FIXTURE(Fixture, "pass_singleton_through_to_identity")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    CheckResult result = check(R"(
+        local function id(x) return x end
+
+        local function foobar(): "hello"
+            return id("hello")
+        end
+    )");    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "singleton_when_type_is_blocked")
+{
+    CheckResult result = check(R"(
+        local function id(x: typeof("hello")) return x end
+
+        local function foobar()
+            return id("hello")
+        end
+    )");    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
 
 
 TEST_SUITE_END();

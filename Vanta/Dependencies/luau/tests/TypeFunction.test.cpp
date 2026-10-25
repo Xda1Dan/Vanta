@@ -5,7 +5,7 @@
 #include "Luau/NotNull.h"
 #include "Luau/Type.h"
 
-#include "ClassFixture.h"
+#include "ExternTypeFixture.h"
 #include "Fixture.h"
 
 #include "doctest.h"
@@ -15,6 +15,8 @@ using namespace Luau;
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_DYNAMIC_FASTINT(LuauTypeFamilyApplicationCartesianProductLimit)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
+LUAU_FASTFLAG(LuauNormalizeGuardAgainstNonTestableNegations)
+LUAU_FASTFLAG(LuauReduceTypeFunctionToSyntheticError)
 
 struct TypeFunctionFixture : Fixture
 {
@@ -240,11 +242,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "mul_function_with_union_of_multiplicatives")
         return;
 
     loadDefinition(R"(
-        declare class Vec2
+        declare extern type Vec2 with
             function __mul(self, rhs: number): Vec2
         end
 
-        declare class Vec3
+        declare extern type Vec3 with
             function __mul(self, rhs: number): Vec3
         end
     )");
@@ -263,7 +265,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "mul_function_with_union_of_multiplicatives_2
         return;
 
     loadDefinition(R"(
-        declare class Vec3
+        declare extern type Vec3 with
             function __mul(self, rhs: number): Vec3
             function __mul(self, rhs: Vec3): Vec3
         end
@@ -317,7 +319,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "type_functions_can_be_shadowed")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK(toString(requireType("hi")) == "(string) -> string");
-    CHECK(toString(requireType("plus")) == "<a, b>(a, b) -> add<a, b>");
+    CHECK(toString(requireType("plus")) == "<T, U>(T, U) -> add<T, U>");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "type_functions_inhabited_with_normalization")
@@ -775,19 +777,19 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "exceeded_distributivity_limits")
     ScopedFastInt sfi{DFInt::LuauTypeFamilyApplicationCartesianProductLimit, 10};
 
     loadDefinition(R"(
-        declare class A
+        declare extern type A with
             function __mul(self, rhs: unknown): A
         end
 
-        declare class B
+        declare extern type B with
             function __mul(self, rhs: unknown): B
         end
 
-        declare class C
+        declare extern type C with
             function __mul(self, rhs: unknown): C
         end
 
-        declare class D
+        declare extern type D with
             function __mul(self, rhs: unknown): D
         end
     )");
@@ -810,19 +812,19 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "didnt_quite_exceed_distributivity_limits")
     ScopedFastInt sfi{DFInt::LuauTypeFamilyApplicationCartesianProductLimit, 20};
 
     loadDefinition(R"(
-        declare class A
+        declare extern type A with
             function __mul(self, rhs: unknown): A
         end
 
-        declare class B
+        declare extern type B with
             function __mul(self, rhs: unknown): B
         end
 
-        declare class C
+        declare extern type C with
             function __mul(self, rhs: unknown): C
         end
 
-        declare class D
+        declare extern type D with
             function __mul(self, rhs: unknown): D
         end
     )");
@@ -840,19 +842,19 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "ensure_equivalence_with_distributivity")
         return;
 
     loadDefinition(R"(
-        declare class A
+        declare extern type A with
             function __mul(self, rhs: unknown): A
         end
 
-        declare class B
+        declare extern type B with
             function __mul(self, rhs: unknown): B
         end
 
-        declare class C
+        declare extern type C with
             function __mul(self, rhs: unknown): C
         end
 
-        declare class D
+        declare extern type D with
             function __mul(self, rhs: unknown): D
         end
     )");
@@ -1063,6 +1065,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cyclic_metatable_should_not_crash_index")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "index_type_function_works_w_generic_types")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -1417,6 +1421,8 @@ TEST_CASE_FIXTURE(Fixture, "fuzz_len_type_function_follow")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_metatable")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -1427,7 +1433,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     LUAU_REQUIRE_NO_ERRORS(result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __index: {  } }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __index: {  } }");
@@ -1435,6 +1441,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_metatable_2")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -1446,7 +1454,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     LUAU_REQUIRE_NO_ERRORS(result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __index: {  } }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __index: {  } }");
@@ -1454,11 +1462,13 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     TypeId foobar = requireTypeAlias("FooBar");
     const MetatableType* mt2 = get<MetatableType>(foobar);
     REQUIRE(mt2);
-    CHECK_EQ(toString(mt2->metatable, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(mt2->metatable, {true}), "setmetatable<{  }, { __index: {  } }>");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_errors_on_metatable_with_metatable_metamethod")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
@@ -1470,7 +1480,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_errors_on_metatab
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __metatable: \"blocked\" }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __metatable: \"blocked\" }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __metatable: \"blocked\" }");
@@ -1725,7 +1735,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "keyof_should_not_assert_on_empty_string_prop
         return;
 
     loadDefinition(R"(
-        declare class Foobar
+        declare extern type Foobar with
             one: boolean
             [""]: number
         end
@@ -1767,8 +1777,16 @@ struct TFFixture
 
     BuiltinTypeFunctions builtinTypeFunctions;
 
-    TypeFunctionContext
-        tfc_{arena, getBuiltins(), NotNull{globalScope.get()}, NotNull{&normalizer}, NotNull{&runtime}, NotNull{&ice}, NotNull{&limits}, NotNull{&subtyping}};
+    TypeFunctionContext tfc_{
+        arena,
+        getBuiltins(),
+        NotNull{globalScope.get()},
+        NotNull{&normalizer},
+        NotNull{&runtime},
+        NotNull{&ice},
+        NotNull{&limits},
+        NotNull{&subtyping}
+    };
 
     NotNull<TypeFunctionContext> tfc{&tfc_};
 };
@@ -1947,6 +1965,8 @@ TEST_CASE_FIXTURE(Fixture, "recursive_restraint_violation_with_defaults")
 
 TEST_CASE_FIXTURE(Fixture, "cli_184124_recursive_restraint_violation_from_devforum")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         type TypeA<A... = ()> = { Func: (self: TypeA<A...>, func: (A...) -> ()) -> () }
         type TypeB<A = any> = { Value: TypeA<TypeB<A>> }
@@ -2036,7 +2056,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2144_type_instantiation_on_type_function
         {FFlag::DebugLuauForceOldSolver, false},
     };
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         --!strict
 
         type ST = {
@@ -2050,7 +2070,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2144_type_instantiation_on_type_function
 
         local t: any = {}
         local _b = access<<"Member1">>(t, "Member1")
-    )"));
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("number", toString(requireType("_b")));
 }
@@ -2075,6 +2097,91 @@ TEST_CASE_FIXTURE(TFFixture, "reduce_cyclic_add")
     CHECK(res.errors.size() == 0);
     CHECK(res.irreducibleTypes.size() == 0);
     CHECK(res.blockedTypes.size() == 0);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "exporting_erroneous_type_function_is_error_type")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauReduceTypeFunctionToSyntheticError, true};
+
+    fileResolver.source["game/A"] = R"(
+        local function get(x: string, y: unknown)
+            return x .. y
+        end
+
+        return { get = get }
+    )";
+
+    CheckResult aResult = getFrontend().check("game/A");
+    LUAU_REQUIRE_ERROR_COUNT(3, aResult);
+
+    CheckResult bResult = check(R"(
+        local Test = require(game.A);
+        local x = Test.get("hello", "world")
+    )");
+    LUAU_REQUIRE_NO_ERRORS(bResult);
+
+    CHECK(toString(requireType("x")) == "*error-type*");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_negation_of_nontestable_type_doesnt_crash_1")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function tf()
+            local dn = types.negationof(types.unionof(types.newfunction(), types.number))
+            return types.intersectionof(types.number, types.negationof(types.unionof(dn, types.string)))
+        end
+        local x: tf<> = nil :: any
+        print(x)
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2634_negation_of_nontestable_type_doesnt_crash_2")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function mknot()
+            return types.negationof(types.unionof(types.newfunction(), types.number))
+        end
+        local f = function(a: mknot<>)
+            return (a == 5)
+        end
+        return f
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2634_negation_of_nontestable_type_doesnt_crash_3")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function tf()
+            local dn = types.negationof(types.unionof(types.newfunction(), types.number))
+            return types.negationof(types.unionof(dn, types.string))
+        end
+        local f: tf<> = nil :: any
+        f()
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+    REQUIRE(get<NormalizationTooComplex>(result.errors[1]));
 }
 
 TEST_SUITE_END();

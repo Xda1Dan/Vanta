@@ -14,6 +14,7 @@ namespace Luau
 namespace CodeGen
 {
 
+struct LogBuilder;
 struct LoweringStats;
 
 namespace A64
@@ -37,6 +38,7 @@ using ExitSyncArgsA64 = SmallVector<ExitSyncArgA64, 2>;
 struct IrRegAllocA64
 {
     IrRegAllocA64(
+        LogBuilder* logger,
         AssemblyBuilderA64& build,
         IrFunction& function,
         LoweringStats* stats,
@@ -62,7 +64,7 @@ struct IrRegAllocA64
     void setupExitSyncEntry(uint32_t blockIdx);
 
     // Spills all live registers that outlive current instruction; all allocated registers are assumed to be undefined
-    size_t spill(uint32_t index, std::initializer_list<RegisterA64> live = {});
+    size_t spill(uint32_t index, std::initializer_list<RegisterA64> live = {}, bool keepLazyLocations = false);
 
     // Restores registers starting from the offset returned by spill(); all spills will be restored to the original registers
     void restore(size_t start);
@@ -96,12 +98,9 @@ struct IrRegAllocA64
     void restore(const Spill& s, RegisterA64 reg);
 
     // Spills the selected register
-    void spill(Set& set, uint32_t index, uint32_t targetInstIdx);
+    void spill(Set& set, uint32_t index, uint32_t targetInstIdx, bool keepLazyLocations);
 
     uint32_t findInstructionWithFurthestNextUse(Set& set) const;
-
-    bool isExtraSpillSlot_DEPRECATED(unsigned slot) const;
-    int getExtraSpillAddressOffset_DEPRECATED(unsigned slot) const;
 
     Set& getSet(KindA64 kind);
 
@@ -110,6 +109,7 @@ struct IrRegAllocA64
         return allocActionCount;
     }
 
+    LogBuilder* logger = nullptr;
     AssemblyBuilderA64& build;
     IrFunction& function;
     LoweringStats* stats = nullptr;
@@ -123,7 +123,7 @@ struct IrRegAllocA64
     // which 8-byte slots are free
     uint64_t freeSpillSlots = 0;
 
-    DenseHashMap<uint32_t, ExitSyncArgsA64> exitSyncArgs{~0u};
+    DenseHashMap<uint32_t, ExitSyncArgsA64> exitSyncArgs;
 
     uint32_t allocActionCount = 0;
 

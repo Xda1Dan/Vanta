@@ -1,18 +1,19 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "IrValueLocationTracking.h"
 
+#include "Luau/IrDump.h"
 #include "Luau/IrUtils.h"
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenForwardRematerialize)
-LUAU_FASTFLAG(LuauCodegenDseRestoreHints)
+LUAU_FASTFLAGVARIABLE(LuauCodegenImprovedExitSync)
 
 namespace Luau
 {
 namespace CodeGen
 {
 
-IrValueLocationTracking::IrValueLocationTracking(IrFunction& function)
-    : function(function)
+IrValueLocationTracking::IrValueLocationTracking(LogBuilder* logger, IrFunction& function)
+    : logger(logger)
+    , function(function)
 {
     vmRegValue.fill(kInvalidInstIdx);
     vmRegDependent.fill(kInvalidInstIdx);
@@ -59,7 +60,21 @@ void IrValueLocationTracking::processStoreLocationHint(const StoreLocationHint* 
         ValueRestoreLocation existingLoc = function.findRestoreLocation(hint->instIdx, /*limitToCurrentBlock*/ false);
 
         if (existingLoc.op.kind != IrOpKind::None)
-            return;
+        {
+            if (existingLoc.lazy)
+            {
+                int prevReg = vmRegOp(existingLoc.op);
+
+                // Remove previous association for the same value
+                if (vmRegValue[prevReg] == hint->instIdx)
+                    vmRegValue[prevReg] = kInvalidInstIdx;
+            }
+            else
+            {
+                // Location has materialized and can no longer be updated
+                return;
+            }
+        }
 
         if (reg > maxReg)
             maxReg = reg;
@@ -69,7 +84,17 @@ void IrValueLocationTracking::processStoreLocationHint(const StoreLocationHint* 
         invalidateRestoreOp(hint->op, /*skipValueInvalidation*/ false);
 
         if (!captured)
+        {
             function.recordRestoreLocation(hint->instIdx, {hint->op, hint->kind, IrCmd::NOP, /*lazy*/ true});
+
+            if (logger && logger->options.includeRegSpills)
+            {
+                if (existingLoc.op.kind != IrOpKind::None)
+                    logger->formatAppendWithPrefix("  ; %%%u has a new lazy restore location R%d\n", hint->instIdx, reg);
+                else
+                    logger->formatAppendWithPrefix("  ; %%%u has a lazy restore location R%d\n", hint->instIdx, reg);
+            }
+        }
 
         vmRegValue[reg] = hint->instIdx;
     }
@@ -106,8 +131,13 @@ void IrValueLocationTracking::beforeInstLowering(IrInst& inst)
         // While ADJUST_STACK_TO_REG would semantically define the result range, we need to define it immediately
         invalidateRestoreVmRegs(vmRegOp(OP_B(inst)), function.intOp(OP_G(inst)));
         break;
+    case IrCmd::INVOKE_FASTPCALL:
+        // Even if result count is limited, all registers starting from function (ra) might be modified
+        invalidateRestoreVmRegs(vmRegOp(OP_A(inst)), -1);
+        break;
     case IrCmd::DO_ARITH:
     case IrCmd::DO_LEN:
+    case IrCmd::CONSTRUCT:
     case IrCmd::GET_TABLE:
     case IrCmd::GET_CACHED_IMPORT:
         invalidateRestoreOp(OP_A(inst), /*skipValueInvalidation*/ false);
@@ -246,7 +276,7 @@ void IrValueLocationTracking::afterInstLowering(IrInst& inst, uint32_t instIdx)
         break;
     case IrCmd::NUM_TO_UINT:
     case IrCmd::NUM_TO_INT:
-        if (FFlag::LuauCodegenForwardRematerialize && OP_A(inst).kind == IrOpKind::Inst)
+        if (OP_A(inst).kind == IrOpKind::Inst)
         {
             ValueRestoreLocation ownerLoc = function.findRestoreLocation(OP_A(inst).index, /* limitToCurrentBlock */ true);
 
@@ -257,9 +287,20 @@ void IrValueLocationTracking::afterInstLowering(IrInst& inst, uint32_t instIdx)
                 if (!function.cfg.captured.regs.test(reg) && vmRegDependent[reg] == kInvalidInstIdx)
                 {
                     IrCmd forwardCmd = inst.cmd == IrCmd::NUM_TO_UINT ? IrCmd::UINT_TO_NUM : IrCmd::INT_TO_NUM;
-                    function.recordRestoreLocation(instIdx, {ownerLoc.op, IrValueKind::Double, forwardCmd});
+
+                    if (FFlag::LuauCodegenImprovedExitSync)
+                        function.recordRestoreLocation(instIdx, {ownerLoc.op, IrValueKind::Double, forwardCmd, /* lazy */ false, OP_A(inst).index});
+                    else
+                        function.recordRestoreLocation(instIdx, {ownerLoc.op, IrValueKind::Double, forwardCmd});
 
                     vmRegDependent[reg] = instIdx;
+
+                    if (logger && logger->options.includeRegSpills)
+                    {
+                        const char* conv = getConversionCmdSuffix(forwardCmd);
+
+                        logger->formatAppendWithPrefix("  ; %%%u can be restored from R%d%s\n", instIdx, reg, conv);
+                    }
                 }
             }
         }
@@ -284,28 +325,42 @@ void IrValueLocationTracking::recordRestoreOp(uint32_t instIdx, IrOp location)
         bool captured = function.cfg.captured.regs.test(reg);
 
         if (!captured)
+        {
             function.recordRestoreLocation(instIdx, {location, getCmdValueKind(inst.cmd), IrCmd::NOP});
+
+            if (logger && logger->options.includeRegSpills)
+                logger->formatAppendWithPrefix("  ; %%%u can be restored from R%d\n", instIdx, reg);
+        }
 
         vmRegValue[reg] = instIdx;
 
         // Any dependent value has to be cleared in beforeInstLowering before recording new restore operations
-        if (FFlag::LuauCodegenForwardRematerialize)
-            CODEGEN_ASSERT(vmRegDependent[reg] == kInvalidInstIdx);
+        CODEGEN_ASSERT(vmRegDependent[reg] == kInvalidInstIdx);
 
         if (canBeRematerialized(inst.cmd) && OP_A(inst).kind == IrOpKind::Inst)
         {
             uint32_t depInstIdx = OP_A(inst).index;
 
             if (!captured)
-                function.recordRestoreLocation(depInstIdx, {location, getCmdValueKind(inst.cmd), inst.cmd});
+            {
+                if (FFlag::LuauCodegenImprovedExitSync)
+                    function.recordRestoreLocation(depInstIdx, {location, getCmdValueKind(inst.cmd), inst.cmd, /* lazy */ false, instIdx});
+                else
+                    function.recordRestoreLocation(depInstIdx, {location, getCmdValueKind(inst.cmd), inst.cmd});
 
-            if (FFlag::LuauCodegenForwardRematerialize)
-                vmRegDependent[reg] = depInstIdx;
+                if (logger && logger->options.includeRegSpills)
+                    logger->formatAppendWithPrefix("  ; %%%u can be restored from R%d%s\n", depInstIdx, reg, getConversionCmdSuffix(inst.cmd));
+            }
+
+            vmRegDependent[reg] = depInstIdx;
         }
     }
     else if (location.kind == IrOpKind::VmConst)
     {
         function.recordRestoreLocation(instIdx, {location, getCmdValueKind(inst.cmd)});
+
+        if (logger && logger->options.includeRegSpills)
+            logger->formatAppendWithPrefix("  ; %%%u can be restored from K%d\n", instIdx, vmConstOp(location));
     }
 }
 
@@ -349,50 +404,46 @@ void IrValueLocationTracking::invalidateRestoreOp(IrOp location, bool skipValueI
 
             // If the current location is the one that is being invalidated, we can no longer restore from it
             if (location == currRestoreLocation.op)
+            {
                 function.recordRestoreLocation(instIdx, {});
+
+                if (logger && logger->options.includeRegSpills && !inst.needsReload)
+                    logger->formatAppendWithPrefix("  ; %%%u can no longer be restored from R%d\n", instIdx, reg);
+            }
 
             // Register loses link with instruction
             instIdx = kInvalidInstIdx;
 
-            if (FFlag::LuauCodegenForwardRematerialize)
+            // Invalidate chained instruction location as well
+            uint32_t& depInstIdx = vmRegDependent[reg];
+
+            if (depInstIdx != kInvalidInstIdx)
             {
-                // Invalidate chained instruction location as well
-                uint32_t& depInstIdx = vmRegDependent[reg];
+                IrInst& depInst = function.instructions[depInstIdx];
 
-                if (depInstIdx != kInvalidInstIdx)
+                if (depInst.needsReload)
                 {
-                    IrInst& depInst = function.instructions[depInstIdx];
+                    // Recorded restore location should be materialized by this point
+                    CODEGEN_ASSERT(!function.findRestoreLocation(depInstIdx, false).lazy);
 
-                    if (depInst.needsReload)
+                    restoreCallback(restoreCallbackCtx, depInst);
+                }
+
+                ValueRestoreLocation depRestoreLocation = function.findRestoreLocation(depInstIdx, /* limitToCurrentBlock */ false);
+
+                if (location == depRestoreLocation.op)
+                {
+                    function.recordRestoreLocation(depInstIdx, {});
+
+                    if (logger && logger->options.includeRegSpills && !depInst.needsReload)
                     {
-                        // Recorded restore location should be materialized by this point
-                        CODEGEN_ASSERT(!function.findRestoreLocation(depInstIdx, false).lazy);
+                        const char* conv = getConversionCmdSuffix(depRestoreLocation.conversionCmd);
 
-                        restoreCallback(restoreCallbackCtx, depInst);
+                        logger->formatAppendWithPrefix("  ; %%%u can no longer be restored from R%d%s\n", depInstIdx, reg, conv);
                     }
-
-                    ValueRestoreLocation depRestoreLocation = function.findRestoreLocation(depInstIdx, /* limitToCurrentBlock */ false);
-
-                    if (location == depRestoreLocation.op)
-                        function.recordRestoreLocation(depInstIdx, {});
-
-                    depInstIdx = kInvalidInstIdx;
                 }
-            }
-            else
-            {
-                // Chained instruction special case
-                if (canBeRematerialized(inst.cmd) && OP_A(inst).kind == IrOpKind::Inst)
-                {
-                    uint32_t depInstIdx = OP_A(inst).index;
-                    IrInst& depInst = function.instructions[depInstIdx];
 
-                    if (depInst.needsReload)
-                        restoreCallback(restoreCallbackCtx, depInst);
-
-                    if (location == currRestoreLocation.op)
-                        function.recordRestoreLocation(depInstIdx, {});
-                }
+                depInstIdx = kInvalidInstIdx;
             }
         }
     }
@@ -411,6 +462,62 @@ void IrValueLocationTracking::invalidateRestoreVmRegs(int start, int count)
 
     for (int reg = start; reg <= end; reg++)
         invalidateRestoreOp(IrOp{IrOpKind::VmReg, uint8_t(reg)}, /*skipValueInvalidation*/ false);
+}
+
+void IrValueLocationTracking::setupExitSyncEntry(uint32_t blockIdx)
+{
+    // Reset value tracking for the sync block
+    vmRegValue.fill(kInvalidInstIdx);
+    vmRegDependent.fill(kInvalidInstIdx);
+
+    const uint32_t* guardInstIdx = function.blockToVmExitMap.find(blockIdx);
+
+    if (!guardInstIdx)
+        return;
+
+    const VmExitSyncInfo* syncInfo = function.vmExitInfo.find(*guardInstIdx);
+
+    if (!syncInfo)
+        return;
+
+    for (IrOp op : syncInfo->argOps)
+    {
+        if (op.kind != IrOpKind::Inst)
+            continue;
+
+        IrInst& inst = function.instOp(op);
+        uint32_t instIdx = op.index;
+
+        if (!inst.needsReload)
+            continue;
+
+        ValueRestoreLocation location = function.findRestoreLocation(instIdx, /* limitToCurrentBlock */ false);
+
+        if (location.op.kind != IrOpKind::VmReg)
+            continue;
+
+        int reg = vmRegOp(location.op);
+
+        if (reg > maxReg)
+            maxReg = reg;
+
+        if (location.conversionCmd == IrCmd::NOP)
+        {
+            CODEGEN_ASSERT(vmRegValue[reg] == kInvalidInstIdx || vmRegValue[reg] == instIdx); // Unset or same
+            vmRegValue[reg] = instIdx;
+        }
+        else
+        {
+            CODEGEN_ASSERT(vmRegDependent[reg] == kInvalidInstIdx);
+            vmRegDependent[reg] = instIdx;
+
+            CODEGEN_ASSERT(vmRegValue[reg] == kInvalidInstIdx || vmRegValue[reg] == location.sourceInstIdx); // Unset or same
+            vmRegValue[reg] = location.sourceInstIdx;
+        }
+
+        if (logger && logger->options.includeRegSpills)
+            logger->formatAppendWithPrefix("  ; %%%u can be restored from R%d%s\n", instIdx, reg, getConversionCmdSuffix(location.conversionCmd));
+    }
 }
 
 } // namespace CodeGen

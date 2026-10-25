@@ -22,7 +22,10 @@ const char* const luaT_typenames[] = {
     "userdata",
     "number",
     "integer",
+
+#if LUA_VECTOR_DOUBLE == 0
     "vector",
+#endif
 
     "string",
 
@@ -33,6 +36,10 @@ const char* const luaT_typenames[] = {
     "buffer",
     "class",
     "object",
+
+#if LUA_VECTOR_DOUBLE == 1
+    "vector",
+#endif
 };
 
 const char* const luaT_eventname[] = {
@@ -128,6 +135,10 @@ const TValue* luaT_gettmbyobj(lua_State* L, const TValue* o, TMS event)
     default:
         mt = L->global->mt[ttype(o)];
     }
+
+    if (mt && hasmetacache(mt))
+        return getmetacache(mt, event);
+
     return (mt ? luaH_getstr(mt, L->global->tmname[event]) : luaO_nilobject);
 }
 

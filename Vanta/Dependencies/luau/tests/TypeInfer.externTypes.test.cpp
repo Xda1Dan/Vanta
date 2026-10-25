@@ -6,7 +6,7 @@
 #include "Luau/Type.h"
 
 #include "Fixture.h"
-#include "ClassFixture.h"
+#include "ExternTypeFixture.h"
 
 #include "ScopedFlags.h"
 #include "doctest.h"
@@ -385,6 +385,8 @@ TEST_CASE_FIXTURE(ExternTypeFixture, "table_indexers_are_invariant")
 
 TEST_CASE_FIXTURE(ExternTypeFixture, "table_class_unification_reports_sane_errors_for_missing_properties")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
         function foo(bar)
             bar.Y = 1 -- valid
@@ -441,6 +443,8 @@ b.X = 2 -- real Vector2.X is also read-only
 
 TEST_CASE_FIXTURE(ExternTypeFixture, "detailed_class_unification_error")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     CheckResult result = check(R"(
 local function foo(v)
     return v.X :: number + string.len(v.Y)
@@ -457,8 +461,7 @@ b(a)
     if (!FFlag::DebugLuauForceOldSolver)
     {
         const std::string expected = "Expected this to be '{ read X: unknown, read Y: string }', but got 'Vector2'; \n"
-                                     "accessing `Y` results in `number` in the latter type and `string` in the former type, "
-                                     "and `number` is not a subtype of `string`";
+                                     "Expected property `Y` to be `string`, but got `number`";
         CHECK_EQ(expected, toString(result.errors.at(0)));
     }
     else
@@ -550,8 +553,7 @@ local b: B = a
     {
         CHECK(
             "Expected this to be 'B', but got 'A'; \n"
-            "accessing `x` results in `ChildClass` in the latter type and `BaseClass` in the former type, and `ChildClass` is not "
-            "exactly `BaseClass`" == toString(result.errors.at(0))
+            "Expected property `x` to be exactly `BaseClass`, but got `ChildClass`" == toString(result.errors.at(0))
         );
     }
     else
@@ -674,14 +676,7 @@ TEST_CASE_FIXTURE(ExternTypeFixture, "indexable_extern_types")
 
         if (!FFlag::DebugLuauForceOldSolver)
         {
-            // clang-format off
-            const std::string expected =
-                "Expected this to be 'number | string', but got 'boolean';\n"
-                "this is because\n"
-                "\t* the 1st component of the union is `string`, and `boolean` is not a subtype of `string`\n"
-                "\t* the 2nd component of the union is `number`, and `boolean` is not a subtype of `number`\n"
-            ;
-            // clang-format on
+            const std::string expected = "Expected this to be 'number | string', but got 'boolean'";
             CHECK_LONG_STRINGS_EQ(expected, toString(result.errors[0]));
         }
         else
@@ -697,14 +692,7 @@ TEST_CASE_FIXTURE(ExternTypeFixture, "indexable_extern_types")
 
         if (!FFlag::DebugLuauForceOldSolver)
         {
-            // clang-format off
-            const std::string expected =
-                "Expected this to be 'number | string', but got 'boolean';\n"
-                "this is because\n"
-                "\t * the 1st component of the union is `string`, and `boolean` is not a subtype of `string`\n"
-                "\t * the 2nd component of the union is `number`, and `boolean` is not a subtype of `number`\n"
-            ;
-            // clang-format on
+            const std::string expected = "Expected this to be 'number | string', but got 'boolean'";
             CHECK_LONG_STRINGS_EQ(expected, toString(result.errors[0]));
         }
         else
@@ -868,13 +856,13 @@ TEST_CASE_FIXTURE(ExternTypeFixture, "cyclic_tables_are_assumed_to_be_compatible
      *
      * Our builtins are essentially defined like so:
      *
-     * declare class BaseClass
+     * declare extern type BaseClass with
      *     BaseField: number
      *     function BaseMethod(self, number): ()
      *     read Touched: Connection
      * end
      *
-     * declare class Connection
+     * declare extern type Connection with
      *     Connect: (Connection, (BaseClass) -> ()) -> ()
      * end
      *
@@ -1035,6 +1023,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_check_key_becomes_never")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_check_key_becomes_intersection")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     loadDefinition(R"(
@@ -1113,6 +1103,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_intersect_with_table_indexer")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_with_indexer_intersect_table")
 {
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     loadDefinition(R"(
@@ -1121,12 +1113,14 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_with_indexer_intersect_table")
         end
     )");
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         local function update(obj: Foobar)
             assert(typeof(obj.Baz) == "number")
             return obj
         end
-    )"));
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("(Foobar) -> Foobar & { read Baz: number }", toString(requireType("update")));
 }
@@ -1247,6 +1241,50 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "extern_type_intersection_with_table_type_2")
     LUAU_CHECK_NO_ERRORS(result);
 
     CHECK_EQ("Instance & { brushes: Instance }", toString(requireTypeAtPosition({2, 18})));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "table_intersected_against_extern_type_1")
+{
+    loadDefinition(R"(
+        declare extern type Frame with
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type BIG_FRAME = {something: Frame} & Frame
+        type context<O> = {_object: O}
+
+        local big_context: context<BIG_FRAME>
+
+        local function fn<O>(p: context<O>)
+        end
+
+        fn(big_context)
+    )"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "table_intersected_against_extern_type_2")
+{
+    DOES_NOT_PASS_WITH_EXACT_TABLES();
+
+    loadDefinition(R"(
+        declare extern type Folder with
+        end
+    )");
+
+    CheckResult result = check(R"(
+        local World : { [number]: { PlayerData: { Settings: { Audio: {} & Folder } } } }
+
+        local function Spread(Id: number)
+            local Ownership = World[Id]
+            assert(Ownership)
+            return Ownership
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    CHECK_EQ("(number) -> { PlayerData: { Settings: { Audio: Folder & {  } } } }", toString(requireType("Spread")));
 }
 
 TEST_SUITE_END();

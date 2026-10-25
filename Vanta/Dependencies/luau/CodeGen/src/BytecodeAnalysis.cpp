@@ -11,8 +11,6 @@
 #include <algorithm>
 #include <array>
 
-LUAU_FASTFLAGVARIABLE(LuauCodegenRegTag2)
-
 namespace Luau
 {
 namespace CodeGen
@@ -524,6 +522,14 @@ static void applyBuiltinCall(LuauBuiltinFunction bfid, BytecodeTypes& types)
         types.result = LBC_TYPE_NIL;
         types.a = LBC_TYPE_TABLE;
         break;
+    case LBF_TABLE_CREATE:
+        types.result = LBC_TYPE_TABLE;
+        types.a = LBC_TYPE_NUMBER;
+        break;
+    case LBF_TABLE_CLEAR:
+        types.result = LBC_TYPE_NIL;
+        types.a = LBC_TYPE_TABLE;
+        break;
     case LBF_RAWSET:
         types.result = LBC_TYPE_ANY;
         types.a = LBC_TYPE_TABLE;
@@ -759,9 +765,6 @@ void buildBytecodeBlocks(IrFunction& function, const std::vector<uint8_t>& jumpT
 
 uint8_t getRegTag(std::array<uint8_t, 256>& regTags, BytecodeTypeInfo& bcTypeInfo, uint8_t reg, int pc)
 {
-    if (!FFlag::LuauCodegenRegTag2)
-        return regTags[reg];
-
     // Prefer the declared type from static analysis
     // otherwise fall back to the computed type from a previous instruction
     auto typeInfo = findRegType(bcTypeInfo, reg, pc);
@@ -816,18 +819,6 @@ void analyzeBytecodeTypes(IrFunction& function, const HostIrHooks& hostHooks)
         {
             const Instruction* pc = &proto->code[i];
             LuauOpcode op = LuauOpcode(LUAU_INSN_OP(*pc));
-
-            // Assign known register types from local type information
-            if (!FFlag::LuauCodegenRegTag2)
-            {
-                // TODO: this is an expensive walk for each instruction
-                // TODO: it's best to lookup when register is actually used in the instruction
-                for (BytecodeRegTypeInfo& el : bcTypeInfo.regTypes)
-                {
-                    if (el.type != LBC_TYPE_ANY && i >= el.startpc && i < el.endpc)
-                        regTags[el.reg] = el.type;
-                }
-            }
 
             BytecodeTypes& bcType = function.bcTypes[i];
 
@@ -1520,7 +1511,23 @@ void analyzeBytecodeTypes(IrFunction& function, const HostIrHooks& hostHooks)
             case LOP_PREPVARARGS:
             case LOP_GETVARARGS:
             case LOP_FORGPREP:
+            case LOP_NEWCLASS:
             case LOP_NEWCLASSMEMBER:
+            case LOP_FASTPCALL:
+            case LOP_GETPRIVATEFIELD:
+            case LOP_SETPRIVATEFIELD:
+                break;
+            case LOP_CONSTRUCT:
+            {
+                int ra = LUAU_INSN_A(*pc);
+
+                regTags[ra] = LBC_TYPE_OBJECT;
+                bcType.result = regTags[ra];
+
+                refineRegType(bcTypeInfo, ra, i, bcType.result);
+                break;
+            }
+            case LOP_FINCONSTRUCT:
                 break;
             default:
                 CODEGEN_ASSERT(!"Unknown instruction");

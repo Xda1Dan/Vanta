@@ -33,6 +33,7 @@ struct LuauTempThreadPopper
 using StateRef = std::unique_ptr<lua_State, void (*)(lua_State*)>;
 
 void* typeFunctionAlloc(void* ud, void* ptr, size_t osize, size_t nsize);
+void* typeFunctionAllocWithLimit(void* ud, void* ptr, size_t osize, size_t nsize);
 
 struct TypeFunctionPrimitiveType
 {
@@ -182,14 +183,16 @@ T* getMutable(TypeFunctionTypePackId tv)
 
 struct TypeFunctionTableIndexer
 {
-    TypeFunctionTableIndexer(TypeFunctionTypeId keyType, TypeFunctionTypeId valueType)
+    TypeFunctionTableIndexer(TypeFunctionTypeId keyType, TypeFunctionTypeId valueType, bool isReadOnly = false)
         : keyType(keyType)
         , valueType(valueType)
+        , isReadOnly(isReadOnly)
     {
     }
 
     TypeFunctionTypeId keyType;
     TypeFunctionTypeId valueType;
+    bool isReadOnly = false;
 };
 
 struct TypeFunctionProperty
@@ -309,7 +312,7 @@ struct TypeFunctionRuntime
     StateRef state;
 
     // Set of functions which have their environment table initialized
-    DenseHashSet<AstStatTypeFunction*> initialized{nullptr};
+    DenseHashSet<AstStatTypeFunction*> initialized;
 
     // Evaluation of type functions should only be performed in the absence of parse errors in the source module
     bool allowEvaluation = true;
@@ -322,6 +325,8 @@ struct TypeFunctionRuntime
 
     // Type builder, valid for the duration of a single evaluation
     TypeFunctionRuntimeBuilderState* runtimeBuilder = nullptr;
+
+    std::unique_ptr<size_t> heapSize = nullptr;
 
 private:
     void prepareState();

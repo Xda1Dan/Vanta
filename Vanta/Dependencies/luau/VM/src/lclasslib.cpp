@@ -1,19 +1,32 @@
 #include "lapi.h"
+#include "lclass.h"
 #include "lobject.h"
 #include "lua.h"
 #include "lualib.h"
 #include "lstate.h"
 
-
+/**
+ * class.isinstance(obj: any, class: class): boolean
+ */
 static int class_isinstance(lua_State* L)
 {
     luaL_checkany(L, 1);
     luaL_checktype(L, 2, LUA_TCLASS);
-    const TValue* inst = luaA_toobject(L, 1);
-    const TValue* obj = luaA_toobject(L, 2);
-    const LuauClass* lclass = classvalue(obj);
-    bool isInstance = ttisobject(inst) && objectvalue(inst)->lclass == lclass;
-    lua_pushboolean(L, isInstance);
+
+    const TValue* obj = luaA_toobject(L, 1);
+
+    if (!ttisobject(obj))
+    {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+
+    const TValue* cls = luaA_toobject(L, 2);
+
+    const LuauClass* lclass = classvalue(cls);
+
+    lua_pushboolean(L, luaR_isinstance(objectvalue(obj), lclass));
+
     return 1;
 }
 

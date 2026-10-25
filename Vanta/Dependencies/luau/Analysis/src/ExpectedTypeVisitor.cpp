@@ -8,8 +8,6 @@
 #include "Luau/TypeUtils.h"
 #include "Luau/VisitType.h"
 
-LUAU_FASTFLAGVARIABLE(LuauBidirectionalInferenceBetterUnionHandling)
-
 namespace Luau
 {
 
@@ -230,22 +228,10 @@ void ExpectedTypeVisitor::applyExpectedType(TypeId expectedType, const AstExpr* 
             {
                 if (auto exprType = astTypes->find(expr))
                 {
-                    if (FFlag::LuauBidirectionalInferenceBetterUnionHandling)
+                    if (auto tt = extractMatchingTableType(utv, *exprType, builtinTypes, arena))
                     {
-                        if (auto tt = extractMatchingTableType(utv, *exprType, builtinTypes))
-                        {
-                            applyExpectedType(*tt, expr);
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        std::vector<TypeId> parts{begin(utv), end(utv)};
-                        if (auto tt = extractMatchingTableType_DEPRECATED(parts, *exprType, builtinTypes))
-                        {
-                            applyExpectedType(*tt, expr);
-                            return;
-                        }
+                        applyExpectedType(*tt, expr);
+                        return;
                     }
                 }
             }
@@ -279,7 +265,7 @@ void ExpectedTypeVisitor::applyExpectedType(TypeId expectedType, const AstExpr* 
                 const AstArray<char>& s = item.key->as<AstExprConstantString>()->value;
                 std::string keyStr{s.data, s.data + s.size};
 
-                // No mater what, we can claim that the expected key type is the
+                // No matter what, we can claim that the expected key type is the
                 // union of all possible props plus the indexer.
                 applyExpectedType(expectedKeyType, item.key);
 
